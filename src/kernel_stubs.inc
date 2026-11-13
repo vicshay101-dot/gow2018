@@ -17,8 +17,10 @@ static ABI int32_t kernel_get_libkernel_text_location(void *out) { (void)out; re
 
 static ABI void *kernel_libc_heap_mutex_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 static ABI void kernel_libc_heap_mutex_free(void *ptr) { free(ptr); }
-static ABI int32_t kernel_libc_heap_get_trace_info(void *out) { (void)out; return 0; }
-static ABI int32_t kernel_libc_heap_get_address_ranges(void *out) { (void)out; return 0; }
+/* Sem trace de heap ativo: responde erro (-1) e nao preenche a saida. A libc so usa a saida
+ * quando recebe sucesso; antes, sucesso sem dados causava NULL deref logo apos a chamada. */
+static ABI int32_t kernel_libc_heap_get_trace_info(void *out) { (void)out; return -1; }
+static ABI int32_t kernel_libc_heap_get_address_ranges(void *out) { (void)out; return -1; }
 static void *heap_range_callback;
 static ABI int32_t kernel_libc_heap_set_address_range_callback(void *cb) { heap_range_callback=cb; return 0; }
 static ABI int32_t kernel_libc_heap_set_trace_marker(void *marker) { (void)marker; return 0; }
