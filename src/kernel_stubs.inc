@@ -1,3 +1,4 @@
+#include <stdlib.h>
 /* kernel_stubs.inc: stubs de libkernel. Formato de linha igual ao import_names.inc.
  * Para adicionar uma funcao: crie a funcao no bloco FUNCOES e uma linha no bloco TABELA.
  * Modo 1 (padrao): define as funcoes. Modo 2 (com KSTUB_ENTRIES definido): gera a tabela. */
@@ -14,6 +15,15 @@ static ABI int32_t kernel_rtld_thread_atexit_decrement(void) { return 0; }
 static ABI int32_t kernel_rtld_set_application_heap_api(void *api) { (void)api; return 0; }
 static ABI int32_t kernel_get_libkernel_text_location(void *out) { (void)out; return 0; }
 
+static ABI void *kernel_libc_heap_mutex_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
+static ABI void kernel_libc_heap_mutex_free(void *ptr) { free(ptr); }
+static ABI int32_t kernel_libc_heap_get_trace_info(void *out) { (void)out; return 0; }
+static ABI int32_t kernel_libc_heap_get_address_ranges(void *out) { (void)out; return 0; }
+static void *heap_range_callback;
+static ABI int32_t kernel_libc_heap_set_address_range_callback(void *cb) { heap_range_callback=cb; return 0; }
+static ABI int32_t kernel_libc_heap_set_trace_marker(void *marker) { (void)marker; return 0; }
+static ABI int32_t kernel_libc_heap_unset_trace_marker(void) { return 0; }
+
 #else
 
 /* TABELA: uma linha por funcao, formato {"nome","funcao"} */
@@ -27,5 +37,13 @@ static ABI int32_t kernel_get_libkernel_text_location(void *out) { (void)out; re
 {"_sceKernelRtldThreadAtexitDecrement",kernel_rtld_thread_atexit_decrement},
 {"_sceKernelRtldSetApplicationHeapAPI",kernel_rtld_set_application_heap_api},
 {"sceKernelGetLibkernelTextLocation",kernel_get_libkernel_text_location},
+
+{"sceLibcHeapGetAddressRanges",kernel_libc_heap_get_address_ranges},
+{"sceLibcHeapGetTraceInfo",kernel_libc_heap_get_trace_info},
+{"sceLibcHeapMutexCalloc",kernel_libc_heap_mutex_calloc},
+{"sceLibcHeapMutexFree",kernel_libc_heap_mutex_free},
+{"sceLibcHeapSetAddressRangeCallback",kernel_libc_heap_set_address_range_callback},
+{"sceLibcHeapSetTraceMarker",kernel_libc_heap_set_trace_marker},
+{"sceLibcHeapUnsetTraceMarker",kernel_libc_heap_unset_trace_marker},
 
 #endif
