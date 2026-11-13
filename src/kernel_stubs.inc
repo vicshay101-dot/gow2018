@@ -1,8 +1,9 @@
-#include <stdlib.h>
 /* kernel_stubs.inc: stubs de libkernel. Formato de linha igual ao import_names.inc.
  * Para adicionar uma funcao: crie a funcao no bloco FUNCOES e uma linha no bloco TABELA.
  * Modo 1 (padrao): define as funcoes. Modo 2 (com KSTUB_ENTRIES definido): gera a tabela. */
 #ifndef KSTUB_ENTRIES
+#include <stdlib.h>
+#include <unistd.h>
 
 static ABI int32_t kernel_get_sanitizer_malloc_replace(void *out) { (void)out; return 0; }
 static ABI int32_t kernel_get_sanitizer_malloc_replace_external(void *out) { (void)out; return 0; }
@@ -35,6 +36,11 @@ static ABI int32_t kernel_libc_heap_set_address_range_callback(void *cb) { heap_
 static ABI int32_t kernel_libc_heap_set_trace_marker(void *marker) { (void)marker; return 0; }
 static ABI int32_t kernel_libc_heap_unset_trace_marker(void) { return 0; }
 
+static ABI int32_t kernel_get_compiled_sdk_version(int32_t *version) { if (version) *version=0x05008001; return 0; }
+static ABI int32_t kernel_is_neo_mode(void) { return 0; }
+static ABI int32_t kernel_get_current_cpu(void) { return 0; }
+static ABI uint32_t kernel_sleep(uint32_t seconds) { sleep(seconds); return 0; }
+
 #else
 
 /* TABELA: uma linha por funcao, formato {"nome","funcao"} */
@@ -56,5 +62,10 @@ static ABI int32_t kernel_libc_heap_unset_trace_marker(void) { return 0; }
 {"sceLibcHeapSetAddressRangeCallback",kernel_libc_heap_set_address_range_callback},
 {"sceLibcHeapSetTraceMarker",kernel_libc_heap_set_trace_marker},
 {"sceLibcHeapUnsetTraceMarker",kernel_libc_heap_unset_trace_marker},
+
+{"sceKernelGetCompiledSdkVersion",kernel_get_compiled_sdk_version},
+{"sceKernelIsNeoMode",kernel_is_neo_mode},
+{"sceKernelGetCurrentCpu",kernel_get_current_cpu},
+{"sceKernelSleep",kernel_sleep},
 
 #endif
