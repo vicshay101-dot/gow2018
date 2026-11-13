@@ -326,6 +326,13 @@ static ABI int32_t kernel_set_thread_atexit_count(int32_t count) {
     thread_atexit_count=count;
     return 0;
 }
+/* ---- thread atexit report (libc reports the atexit state of the thread on exit) ----
+ * _sceKernelSetThreadAtexitReport(void *report): first pass accepts the pointer and reports success. */
+static void *thread_atexit_report;
+static ABI int32_t kernel_set_thread_atexit_report(void *report) {
+    thread_atexit_report=report;
+    return 0;
+}
 static const RuntimeExport exports[]={
     {"sceKernelClockGettime",kernel_clock_gettime}, {"clock_gettime",posix_clock_gettime},
     {"clock_getres",posix_clock_getres},
@@ -357,5 +364,6 @@ static const RuntimeExport exports[]={
     {"pthread_setspecific",posix_key_set}, {"pthread_getspecific",key_get},
     {"_sceKernelSetThreadDtors",kernel_set_thread_dtors},
     {"_sceKernelSetThreadAtexitCount",kernel_set_thread_atexit_count},
+    {"_sceKernelSetThreadAtexitReport",kernel_set_thread_atexit_report},
 };
 uintptr_t runtime_kernel_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
