@@ -342,5 +342,6 @@ static const RuntimeExport exports[]={
     {"scePthreadSetspecific",key_set}, {"scePthreadGetspecific",key_get},
     {"pthread_key_create",posix_key_create}, {"pthread_key_delete",posix_key_delete},
     {"pthread_setspecific",posix_key_set}, {"pthread_getspecific",key_get},
+    {"_sceKernelSetThreadDtors",kernel_set_thread_dtors},
 };
 uintptr_t runtime_kernel_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
