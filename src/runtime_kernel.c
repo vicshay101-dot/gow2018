@@ -333,7 +333,11 @@ static ABI int32_t kernel_set_thread_atexit_report(void *report) {
     thread_atexit_report=report;
     return 0;
 }
+#include "kernel_stubs.inc"
 static const RuntimeExport exports[]={
+#define KSTUB_ENTRIES
+#include "kernel_stubs.inc"
+#undef KSTUB_ENTRIES
     {"sceKernelClockGettime",kernel_clock_gettime}, {"clock_gettime",posix_clock_gettime},
     {"clock_getres",posix_clock_getres},
     {"sceKernelGetProcessTime",process_time}, {"sceKernelGetProcessTimeCounter",process_time_counter},
