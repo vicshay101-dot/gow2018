@@ -308,7 +308,11 @@ void runtime_thread_keys_cleanup(void) {
 static ABI int32_t posix_key_create(uint32_t *k,KeyDestructor d) { int32_t r=key_create(k,d); return r ? r&0xffff : 0; }
 static ABI int32_t posix_key_delete(uint32_t k) { int32_t r=key_delete(k); return r ? r&0xffff : 0; }
 static ABI int32_t posix_key_set(uint32_t k,void *v) { int32_t r=key_set(k,v); return r ? r&0xffff : 0; }
-
+static void (ABI *thread_dtors)(void);
+static ABI int32_t kernel_set_thread_dtors(void (ABI *dtors)(void)) {
+    thread_dtors=dtors;
+    return 0;
+}
 static const RuntimeExport exports[]={
     {"sceKernelClockGettime",kernel_clock_gettime}, {"clock_gettime",posix_clock_gettime},
     {"clock_getres",posix_clock_getres},
