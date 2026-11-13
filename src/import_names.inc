@@ -781,3 +781,4 @@
 {"iKJMWrAumPE#libkernel","getargc"},
 {"FJmglmTMdr4#libkernel","getargv"},
 {"QKd0qM58Qes#libkernel","sceKernelStopUnloadModule"},
+{"rNhWz+lvOMU#libkernel","_sceKernelSetThreadDtors"},
