@@ -308,9 +308,22 @@ void runtime_thread_keys_cleanup(void) {
 static ABI int32_t posix_key_create(uint32_t *k,KeyDestructor d) { int32_t r=key_create(k,d); return r ? r&0xffff : 0; }
 static ABI int32_t posix_key_delete(uint32_t k) { int32_t r=key_delete(k); return r ? r&0xffff : 0; }
 static ABI int32_t posix_key_set(uint32_t k,void *v) { int32_t r=key_set(k,v); return r ? r&0xffff : 0; }
+
+/* ---- per-thread destructor hook (libc registers it during init) ----
+ * _sceKernelSetThreadDtors(void (*dtors)(void)): the guest libc hands libkernel a callback for
+ * thread-exit cleanup. First pass: remember it and report success. It is intentionally not
+ * invoked yet; calling it on thread exit is a follow-up once a log shows the guest relies on it. */
 static void (ABI *thread_dtors)(void);
 static ABI int32_t kernel_set_thread_dtors(void (ABI *dtors)(void)) {
     thread_dtors=dtors;
+    return 0;
+}
+
+/* ---- thread atexit counter (libc asks how many atexit handlers the thread registered) ----
+ * _sceKernelSetThreadAtexitCount(int count): first pass records the value and reports success. */
+static int thread_atexit_count;
+static ABI int32_t kernel_set_thread_atexit_count(int32_t count) {
+    thread_atexit_count=count;
     return 0;
 }
 static const RuntimeExport exports[]={
@@ -343,5 +356,6 @@ static const RuntimeExport exports[]={
     {"pthread_key_create",posix_key_create}, {"pthread_key_delete",posix_key_delete},
     {"pthread_setspecific",posix_key_set}, {"pthread_getspecific",key_get},
     {"_sceKernelSetThreadDtors",kernel_set_thread_dtors},
+    {"_sceKernelSetThreadAtexitCount",kernel_set_thread_atexit_count},
 };
 uintptr_t runtime_kernel_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
