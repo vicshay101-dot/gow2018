@@ -258,6 +258,7 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
 }
 static const struct { const char *nid, *symbol; } import_names[]={
 #include "import_names.inc"
+#include "import_names_extra.inc"
 };
 /* Symbol name for a scoped NID, or NULL when this eboot/libc never imports it. */
 const char *runtime_symbol(const char *nid) {
