@@ -19,7 +19,16 @@ static ABI void *kernel_libc_heap_mutex_calloc(size_t nmemb, size_t size) { retu
 static ABI void kernel_libc_heap_mutex_free(void *ptr) { free(ptr); }
 /* Sem trace de heap ativo: responde erro (-1) e nao preenche a saida. A libc so usa a saida
  * quando recebe sucesso; antes, sucesso sem dados causava NULL deref logo apos a chamada. */
-static ABI int32_t kernel_libc_heap_get_trace_info(void *out) { (void)out; return -1; }
+/* A libc chama com uma struct de 32 bytes. Os campos +0x10 e +0x18 viram ponteiros globais
+ * (0xf90a0 e 0xf9050) e sao escritos logo depois; NULL ai causa o signal 11. O runtime usa
+ * espaco de enderecos plano, entao um buffer estatico do host e valido para o convidado. */
+static uint64_t libc_trace_block[8];
+static ABI int32_t kernel_libc_heap_get_trace_info(void *out) {
+    uint64_t *q = out;
+    q[2] = (uint64_t)(uintptr_t)libc_trace_block;
+    q[3] = (uint64_t)(uintptr_t)libc_trace_block;
+    return 0;
+}
 static ABI int32_t kernel_libc_heap_get_address_ranges(void *out) { (void)out; return -1; }
 static void *heap_range_callback;
 static ABI int32_t kernel_libc_heap_set_address_range_callback(void *cb) { heap_range_callback=cb; return 0; }
