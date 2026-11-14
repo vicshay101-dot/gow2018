@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <inttypes.h>
 #include "runtime.h"
 #include "guest_cpu.h"
@@ -897,13 +898,25 @@ int main(int argc, char **argv) {
     printf("Image base: %p (guest rip - base = image offset)\n", (void *)image);
     {
         /* Dump of the loaded, relocated image: offsets in the file equal image offsets. */
+        /* Written in 1 MiB pieces: one big fwrite stopped early on the storage here. */
         FILE *dump = fopen("/sdcard/Download/gow2018_image.bin", "wb");
         if (dump) {
-            size_t written = fwrite(image, 1, (size_t)size, dump);
+            uint64_t done = 0;
+            const uint64_t piece = UINT64_C(1) << 20;
+            while (done < size) {
+                uint64_t n = size - done < piece ? size - done : piece;
+                size_t w = fwrite(image + done, 1, (size_t)n, dump);
+                if (w != (size_t)n) {
+                    printf("Image dump stopped at %" PRIu64 " of %" PRIu64 " bytes: errno=%d (%s)\n",
+                           done + w, size, errno, strerror(errno));
+                    break;
+                }
+                done += w;
+            }
             fclose(dump);
-            printf("Image dumped to /sdcard/Download/gow2018_image.bin: %" PRIu64 " bytes (written %zu)\n", size, written);
+            printf("Image dumped to /sdcard/Download/gow2018_image.bin: %" PRIu64 " of %" PRIu64 " bytes\n", done, size);
         } else {
-            printf("Image dump failed (storage permission?)\n");
+            printf("Image dump failed: %s (storage permission?)\n", strerror(errno));
         }
     }
     if (native_libc) {
