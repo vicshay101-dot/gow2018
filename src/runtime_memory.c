@@ -403,8 +403,8 @@ static int direct_range_allocated(uint64_t phys, uint64_t size) {
 }
 
 static ABI uint64_t direct_size(void) { return POOL_SIZE; }
-static ABI int32_t direct_allocate(int64_t low, int64_t high, uint64_t size,
-                                  uint64_t alignment, int type, int64_t *out) {
+static ABI int32_t direct_allocate_impl(int64_t low, int64_t high, uint64_t size,
+                                       uint64_t alignment, int type, int64_t *out) {
     if (!alignment) alignment = PAGE;
     if (!out || low < 0 || high < 0 || !size || size % PAGE || !valid_alignment(alignment) || type < 0 || type > 10)
         return INVALID;
@@ -432,6 +432,13 @@ static ABI int32_t direct_allocate(int64_t low, int64_t high, uint64_t size,
     printf("Runtime: direct allocation offset=0x%" PRIx64 ", size=%" PRIu64 " bytes, type=%d\n", start, size, type);
     return 0;
 }
+static ABI int32_t direct_allocate(int64_t low, int64_t high, uint64_t size,
+                                  uint64_t alignment, int type, int64_t *out) {
+    int32_t result=direct_allocate_impl(low,high,size,alignment,type,out);
+    if (result) printf("Runtime: direct allocation FAILED code=0x%x low=0x%" PRIx64 " high=0x%" PRIx64 " size=%" PRIu64 " align=0x%" PRIx64 " type=%d\n",
+                       (unsigned)result,(uint64_t)low,(uint64_t)high,size,alignment,type);
+    return result;
+}
 static int32_t map_direct_locked(void **out, uint64_t size, int prot, int flags, int64_t physical, uint64_t alignment) {
     if (!alignment) alignment=PAGE;
     if (!out || physical < 0 || (uint64_t)physical % PAGE || !size || size % PAGE || !valid_alignment(alignment) ||
@@ -442,11 +449,14 @@ static int32_t map_direct_locked(void **out, uint64_t size, int prot, int flags,
     return result;
 }
 static ABI int32_t direct_map(void **out, uint64_t size, int prot, int flags, int64_t physical, uint64_t alignment) {
+    void *hint = out ? *out : NULL;
     write_lock();
     int32_t result=map_direct_locked(out,size,prot,flags,physical,alignment);
     write_unlock();
     flush_hooks();
     if (!result) printf("Runtime: mapped direct memory %p, size=%" PRIu64 ", prot=0x%x\n", *out, size, prot);
+    else printf("Runtime: map direct memory FAILED code=0x%x hint=%p size=%" PRIu64 " phys=0x%" PRIx64 " flags=0x%x prot=0x%x align=0x%" PRIx64 "\n",
+                (unsigned)result, hint, size, (uint64_t)physical, flags, prot, alignment);
     return result;
 }
 static ABI int32_t direct_map_named(void **out, uint64_t size, int prot, int flags, int64_t physical,
