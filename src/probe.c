@@ -898,23 +898,36 @@ int main(int argc, char **argv) {
     printf("Image base: %p (guest rip - base = image offset)\n", (void *)image);
     {
         /* Dump of the loaded, relocated image: offsets in the file equal image offsets. */
-        /* Written in 1 MiB pieces: one big fwrite stopped early on the storage here. */
+        /* Written from the segment table, not by reading the whole image: the image is no-access
+         * outside its segments, so gaps are written as zeros and only readable segments are copied. */
         FILE *dump = fopen("/sdcard/Download/gow2018_image.bin", "wb");
         if (dump) {
-            uint64_t done = 0;
-            const uint64_t piece = UINT64_C(1) << 20;
-            while (done < size) {
-                uint64_t n = size - done < piece ? size - done : piece;
-                size_t w = fwrite(image + done, 1, (size_t)n, dump);
-                if (w != (size_t)n) {
-                    printf("Image dump stopped at %" PRIu64 " of %" PRIu64 " bytes: errno=%d (%s)\n",
-                           done + w, size, errno, strerror(errno));
-                    break;
+            static unsigned char zeros[1 << 20];
+            uint64_t pos = 0, failed = 0;
+            while (pos < size && !failed) {
+                uint64_t stop = size, step = 0;
+                int copy = 0;
+                for (uint64_t i = 0; i < ns; ++i) {
+                    uint64_t a = segments[i].address, b = a + segments[i].size;
+                    if (pos >= a && pos < b) { stop = b < size ? b : size; copy = (segments[i].flags & 4) != 0; break; }
+                    if (a > pos && a < stop) stop = a;
                 }
-                done += w;
+                step = stop - pos;
+                while (step > 0 && !failed) {
+                    uint64_t n = step < (1u << 20) ? step : (1u << 20);
+                    size_t w = copy ? fwrite(image + pos, 1, (size_t)n, dump)
+                                    : fwrite(zeros, 1, (size_t)n, dump);
+                    if (w != (size_t)n) {
+                        printf("Image dump stopped at %" PRIu64 " of %" PRIu64 " bytes: errno=%d (%s)\n",
+                               pos + w, size, errno, strerror(errno));
+                        failed = 1;
+                        break;
+                    }
+                    pos += n; step -= n;
+                }
             }
             fclose(dump);
-            printf("Image dumped to /sdcard/Download/gow2018_image.bin: %" PRIu64 " of %" PRIu64 " bytes\n", done, size);
+            printf("Image dumped to /sdcard/Download/gow2018_image.bin: %" PRIu64 " of %" PRIu64 " bytes\n", pos, size);
         } else {
             printf("Image dump failed: %s (storage permission?)\n", strerror(errno));
         }
