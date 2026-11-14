@@ -378,18 +378,36 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         if (!address) return NO_MEMORY;
     }
     if (host_map(address,size,host_prot(prot),kind==KIND_RESERVED,phys)) {
-    int host_errno = errno;
-
-    fprintf(stderr,
-        "Runtime: HOST MMAP FAILED addr=%p size=%" PRIu64
-        " phys=0x%" PRIx64 " errno=%d (%s)\n",
-        (void *)address,
-        size,
-        phys,
-        host_errno,
-        strerror(host_errno));
-
-    return NO_MEMORY;
+        int host_errno=errno;
+        fprintf(stderr,"Runtime: HOST MMAP FAILED addr=%p size=%" PRIu64 " phys=0x%" PRIx64 " kind=%d errno=%d (%s)\n",
+                (void *)address,size,phys,kind,host_errno,strerror(host_errno));
+        /* A fixed guest address the host cannot back (typically above the kernel's VA limit,
+         * e.g. 39-bit VA on Android) is relocated to a free spot; the caller gets the real
+         * address through *inout, as with a non-fixed map. */
+        if (!(flags & MAP_FIXED_FLAG) || kind==KIND_RESERVED) return NO_MEMORY;
+        uintptr_t moved=find_free(USER_MIN,size,alignment);
+        if (!moved || host_map(moved,size,host_prot(prot),0,phys)) {
+            fprintf(stderr,"Runtime: relocation of fixed map %p FAILED (found=%p errno=%d)\n",(void *)address,(void *)moved,errno);
+            return NO_MEMORY;
+        }
+        fprintf(stderr,"Runtime: fixed map %p relocated to %p (size=%" PRIu64 ")\n",(void *)address,(void *)moved,size);
+        address=moved;
+    }
+    if (overlaps(address,address+size,1)) {
+        for (size_t i=vma_index(address); i<vma_count && vmas[i].start<address+size; ++i)
+            if (vmas[i].kind!=KIND_RESERVED) {
+                uintptr_t a=vmas[i].start>address ? vmas[i].start : address;
+                uintptr_t e=vmas[i].end<address+size ? vmas[i].end : address+size;
+                queue_hook(HOOK_UNMAP,a,e-a);
+            }
+    }
+    drop_range(address,address+size);
+    Vma v={address,address+size,kind,prot,type,phys};
+    if (vma_insert(vma_index(address),v)) return NO_MEMORY;
+    if (kind==KIND_FLEXIBLE) flexible_bytes+=size;
+    if (kind!=KIND_RESERVED) queue_hook(HOOK_MAP,address,size);
+    *inout=(void *)address;
+    return 0;
 }
 static int block_type(uint64_t phys) {
     for (int i=0;i<LIMIT;++i)
@@ -845,4 +863,3 @@ void runtime_memory_report(void) {
     printf("Runtime: flexible maps=%zu, in use=%" PRIu64 ", protects=%zu, queries=%zu, regions=%zu\n",
            flexible_maps, flexible_bytes, protects, queries, vma_count);
 }
-
