@@ -377,14 +377,19 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         address=find_free(address,size,alignment);
         if (!address) return NO_MEMORY;
     }
-    if (host_map(address,size,host_prot(prot),kind==KIND_RESERVED,phys)) return NO_MEMORY;
-    void *mapped=(void *)address;
-    drop_range(address,address+size);
-    if (vma_insert(vma_index(address),(Vma){address,address+size,kind,prot,type,phys})) return NO_MEMORY;
-    if (kind==KIND_FLEXIBLE) flexible_bytes+=size;
-    if (kind!=KIND_RESERVED) queue_hook(HOOK_MAP,address,size);
-    *inout=mapped;
-    return 0;
+    if (host_map(address,size,host_prot(prot),kind==KIND_RESERVED,phys)) {
+    int host_errno = errno;
+
+    fprintf(stderr,
+        "Runtime: HOST MMAP FAILED addr=%p size=%" PRIu64
+        " phys=0x%" PRIx64 " errno=%d (%s)\n",
+        (void *)address,
+        size,
+        phys,
+        host_errno,
+        strerror(host_errno));
+
+    return NO_MEMORY;
 }
 static int block_type(uint64_t phys) {
     for (int i=0;i<LIMIT;++i)
