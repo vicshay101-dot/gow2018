@@ -894,6 +894,7 @@ int main(int argc, char **argv) {
     }
     if (!executable_entry) fail("entry is not executable");
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
+    printf("Image base: %p (guest rip - base = image offset)\n", (void *)image);
     {
         /* Dump of the loaded, relocated image: offsets in the file equal image offsets. */
         FILE *dump = fopen("/sdcard/Download/gow2018_image.bin", "wb");
