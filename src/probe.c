@@ -894,6 +894,17 @@ int main(int argc, char **argv) {
     }
     if (!executable_entry) fail("entry is not executable");
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
+    {
+        /* Dump of the loaded, relocated image: offsets in the file equal image offsets. */
+        FILE *dump = fopen("/sdcard/Download/gow2018_image.bin", "wb");
+        if (dump) {
+            size_t written = fwrite(image, 1, (size_t)size, dump);
+            fclose(dump);
+            printf("Image dumped to /sdcard/Download/gow2018_image.bin: %" PRIu64 " bytes (written %zu)\n", size, written);
+        } else {
+            printf("Image dump failed (storage permission?)\n");
+        }
+    }
     if (native_libc) {
         for (uint64_t m=0;m<module_count;++m) {
             int init_executable=0;
