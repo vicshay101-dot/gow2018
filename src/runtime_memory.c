@@ -455,9 +455,41 @@ static ABI int32_t direct_allocate_impl(int64_t low, int64_t high, uint64_t size
     printf("Runtime: direct allocation offset=0x%" PRIx64 ", size=%" PRIu64 " bytes, type=%d\n", start, size, type);
     return 0;
 }
+
+/* Dumps the readable guest mappings (the loaded, relocated game image) to a file the
+ * Termux can read. Format: repeated records of { u64 start, u64 length, bytes }.
+ * Runs once, on the first direct allocation, when the image is already mapped. */
+#define DUMP_PATH "/sdcard/Download/gow2018_guest_dump.bin"
+#define DUMP_MAX_REGION (UINT64_C(128) * 1024 * 1024)
+#define DUMP_MAX_TOTAL  (UINT64_C(256) * 1024 * 1024)
+static int dumped;
+static void dump_guest_image(void) {
+    if (dumped) return;
+    dumped = 1;
+    FILE *f = fopen(DUMP_PATH, "wb");
+    if (!f) { printf("Runtime: dump failed: %s (permissao de armazenamento?)\n", strerror(errno)); return; }
+    uint64_t total = 0, written = 0, skipped = 0;
+    read_lock();
+    for (size_t i = 0; i < vma_count; ++i) {
+        Vma v = vmas[i];
+        uint64_t len = (uint64_t)(v.end - v.start);
+        if (v.kind == KIND_RESERVED || !(v.prot & 0x11) || len > DUMP_MAX_REGION || total + len > DUMP_MAX_TOTAL) {
+            ++skipped; continue;
+        }
+        uint64_t header[2] = { (uint64_t)v.start, len };
+        fwrite(header, sizeof(header), 1, f);
+        fwrite((void *)v.start, 1, (size_t)len, f);
+        total += len; ++written;
+    }
+    read_unlock();
+    fclose(f);
+    printf("Runtime: guest dump written to %s: %" PRIu64 " regions, %" PRIu64 " bytes, %" PRIu64 " skipped\n",
+           DUMP_PATH, written, total, skipped);
+}
 static ABI int32_t direct_allocate(int64_t low, int64_t high, uint64_t size,
                                   uint64_t alignment, int type, int64_t *out) {
     int32_t result=direct_allocate_impl(low,high,size,alignment,type,out);
+    if (!result) dump_guest_image();
     if (result) printf("Runtime: direct allocation FAILED code=0x%x low=0x%" PRIx64 " high=0x%" PRIx64 " size=%" PRIu64 " align=0x%" PRIx64 " type=%d\n",
                        (unsigned)result,(uint64_t)low,(uint64_t)high,size,alignment,type);
     return result;
