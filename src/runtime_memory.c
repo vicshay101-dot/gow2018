@@ -471,8 +471,18 @@ static int32_t map_direct_locked(void **out, uint64_t size, int prot, int flags,
     if (!result) ++maps;
     return result;
 }
+
+/* Trace: logs every guest request whose address is above the 39-bit limit (512 GB),
+ * so we can see which absolute addresses the game really uses. */
+static void trace_high(const char *who, const void *hint, uint64_t size, uint64_t phys) {
+    uintptr_t a=(uintptr_t)hint;
+    if (a>=UINT64_C(0x8000000000) || (a && a+size>UINT64_C(0x8000000000)))
+        fprintf(stderr,"TRACE high %s hint=0x%" PRIx64 " size=0x%" PRIx64 " phys=0x%" PRIx64 "\n",
+                who,(uint64_t)a,size,phys);
+}
 static ABI int32_t direct_map(void **out, uint64_t size, int prot, int flags, int64_t physical, uint64_t alignment) {
     void *hint = out ? *out : NULL;
+    trace_high("direct_map",hint,size,(uint64_t)physical);
     write_lock();
     int32_t result=map_direct_locked(out,size,prot,flags,physical,alignment);
     write_unlock();
@@ -554,6 +564,7 @@ static int32_t map_flexible_locked(void **inout, uint64_t size, int prot, int fl
     return result;
 }
 static ABI int32_t map_flexible(void **inout, uint64_t size, int prot, int flags) {
+    trace_high("map_flexible",inout?*inout:NULL,size,0);
     write_lock();
     int32_t result=map_flexible_locked(inout,size,prot,flags);
     write_unlock();
@@ -578,6 +589,7 @@ static ABI void *posix_mmap(void *address, uint64_t size, int prot, int flags, i
 }
 static ABI int32_t posix_msync(void *address, uint64_t size, int flags) { (void)address; (void)size; (void)flags; return 0; }
 static ABI int32_t reserve_range(void **inout, uint64_t size, int flags, uint64_t alignment) {
+    trace_high("reserve_range",inout?*inout:NULL,size,0);
     if (!alignment) alignment=PAGE;
     if (!inout || !size || size%PAGE || !valid_alignment(alignment)) return INVALID;
     write_lock();
@@ -863,3 +875,4 @@ void runtime_memory_report(void) {
     printf("Runtime: flexible maps=%zu, in use=%" PRIu64 ", protects=%zu, queries=%zu, regions=%zu\n",
            flexible_maps, flexible_bytes, protects, queries, vma_count);
 }
+
