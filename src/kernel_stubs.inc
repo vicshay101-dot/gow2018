@@ -52,7 +52,34 @@ static ABI uint32_t kernel_sleep(uint32_t seconds) { sleep(seconds); return 0; }
 #define KHTTP_NETWORK ((int32_t)0x80431063)
 #define KSYSTEM_PARAMETER ((int32_t)0x80A10003)
 
-static ABI int32_t kernel_ok(void) { return 0; }
+/* Prints the first call of each stub, so a log shows which of these the game reached before a crash. */
+#define KTRACE(name) do { static int seen_; if (!seen_) { seen_=1; printf("Runtime: first call: %s\n",name); } } while (0)
+#define KSTUB_RET(name,type,value) static ABI type kst_##name(void) { KTRACE(#name); return (value); }
+KSTUB_RET(sceKernelGetGPI,int32_t,0)
+KSTUB_RET(sceKernelGetPageTableStats,int32_t,0)
+KSTUB_RET(sceKernelMtypeprotect,int32_t,0)
+KSTUB_RET(sceKernelSetPrtAperture,int32_t,0)
+KSTUB_RET(sceKernelSetVirtualRangeName,int32_t,0)
+KSTUB_RET(scePthreadSetschedparam,int32_t,0)
+KSTUB_RET(pthread_setschedparam,int32_t,0)
+KSTUB_RET(scePthreadCancel,int32_t,0)
+KSTUB_RET(sceCoredumpAttachMemoryRegion,int32_t,0)
+KSTUB_RET(sceCoredumpRegisterCoredumpHandler,int32_t,0)
+KSTUB_RET(sceCoredumpWriteUserData,int32_t,0)
+KSTUB_RET(scePlayGoDialogOpen,int32_t,0)
+KSTUB_RET(scePlayGoSetLanguageMask,int32_t,0)
+KSTUB_RET(connect,int64_t,-1)
+KSTUB_RET(recv,int64_t,-1)
+KSTUB_RET(send,int64_t,-1)
+KSTUB_RET(select,int64_t,-1)
+KSTUB_RET(shutdown,int64_t,-1)
+KSTUB_RET(sceHttpUriEscape,int32_t,KHTTP_NETWORK)
+KSTUB_RET(sceNpGetAccountCountryA,int32_t,KNP_SIGNED_OUT)
+KSTUB_RET(sceNpGetAccountDateOfBirthA,int32_t,KNP_SIGNED_OUT)
+KSTUB_RET(sceNpGetAccountIdA,int32_t,KNP_SIGNED_OUT)
+KSTUB_RET(sceNpGetAccountLanguageA,int32_t,KNP_SIGNED_OUT)
+KSTUB_RET(sceNpTssGetData,int32_t,KNP_SIGNED_OUT)
+KSTUB_RET(sceSystemServiceGetPlatformPrivacySetting,int32_t,KSYSTEM_PARAMETER)
 
 /* ---- event flags: 64-bit handle = id; one global condvar, broadcast on every change ---- */
 typedef struct KEvf { uint64_t id, bits; int deleted; struct KEvf *next; } KEvf;
@@ -65,6 +92,7 @@ static KEvf *kevf_find(uint64_t id) {
     return NULL;
 }
 static ABI int32_t kernel_evf_create(uint64_t *out,const char *name,uint32_t attr,uint64_t initial,const void *opt) {
+    KTRACE("sceKernelCreateEventFlag");
     (void)name; (void)attr; (void)opt;
     if (!out) return KERR(22);
     KEvf *e=calloc(1,sizeof(*e));
@@ -75,6 +103,7 @@ static ABI int32_t kernel_evf_create(uint64_t *out,const char *name,uint32_t att
     return 0;
 }
 static ABI int32_t kernel_evf_delete(uint64_t id) {
+    KTRACE("sceKernelDeleteEventFlag");
     pthread_mutex_lock(&kevf_lock);
     KEvf *e=kevf_find(id);
     if (!e) { pthread_mutex_unlock(&kevf_lock); return KERR(3); }
@@ -84,6 +113,7 @@ static ABI int32_t kernel_evf_delete(uint64_t id) {
     return 0;
 }
 static ABI int32_t kernel_evf_set(uint64_t id,uint64_t pattern) {
+    KTRACE("sceKernelSetEventFlag");
     pthread_mutex_lock(&kevf_lock);
     KEvf *e=kevf_find(id);
     if (!e) { pthread_mutex_unlock(&kevf_lock); return KERR(3); }
@@ -97,6 +127,7 @@ static ABI int32_t kernel_evf_set(uint64_t id,uint64_t pattern) {
 #define KEVF_CLEAR_ALL 0x10
 #define KEVF_CLEAR_PAT 0x20
 static ABI int32_t kernel_evf_wait(uint64_t id,uint64_t pattern,uint32_t mode,uint64_t *result,uint32_t *timeout_us) {
+    KTRACE("sceKernelWaitEventFlag");
     int and_=!!(mode&KEVF_AND), or_=!!(mode&KEVF_OR);
     if (!pattern || and_==or_) return KERR(22);     /* exactly one of AND/OR */
     struct timespec deadline;
@@ -133,6 +164,7 @@ static ABI int32_t kernel_evf_wait(uint64_t id,uint64_t pattern,uint32_t mode,ui
 /* ---- POSIX semaphores: the guest sem_t just stores a pointer to a host object ---- */
 typedef struct KPsem { pthread_mutex_t m; pthread_cond_t c; uint32_t value; } KPsem;
 static ABI int32_t kernel_sem_init(KPsem **sem,int pshared,uint32_t value) {
+    KTRACE("sem_init");
     (void)pshared;
     if (!sem) return -1;
     KPsem *s=calloc(1,sizeof(*s));
@@ -142,18 +174,21 @@ static ABI int32_t kernel_sem_init(KPsem **sem,int pshared,uint32_t value) {
     return 0;
 }
 static ABI int32_t kernel_sem_destroy(KPsem **sem) {
+    KTRACE("sem_destroy");
     if (!sem || !*sem) return -1;
     KPsem *s=*sem; *sem=NULL;
     pthread_mutex_destroy(&s->m); pthread_cond_destroy(&s->c); free(s);
     return 0;
 }
 static ABI int32_t kernel_sem_post(KPsem **sem) {
+    KTRACE("sem_post");
     if (!sem || !*sem) return -1;
     KPsem *s=*sem;
     pthread_mutex_lock(&s->m); ++s->value; pthread_cond_signal(&s->c); pthread_mutex_unlock(&s->m);
     return 0;
 }
 static ABI int32_t kernel_sem_wait(KPsem **sem) {
+    KTRACE("sem_wait");
     if (!sem || !*sem) return -1;
     KPsem *s=*sem;
     pthread_mutex_lock(&s->m);
@@ -163,6 +198,7 @@ static ABI int32_t kernel_sem_wait(KPsem **sem) {
     return 0;
 }
 static ABI int32_t kernel_sem_timedwait(KPsem **sem,const struct timespec *abs) {   /* abs: CLOCK_REALTIME deadline */
+    KTRACE("sem_timedwait");
     if (!sem || !*sem || !abs) return -1;
     KPsem *s=*sem;
     pthread_mutex_lock(&s->m);
@@ -175,11 +211,11 @@ static ABI int32_t kernel_sem_timedwait(KPsem **sem,const struct timespec *abs) 
 }
 
 /* ---- offline sockets: every call fails (the game must already cope: sceNet* says "unreachable") ---- */
-static ABI int64_t kernel_sock_fail(void) { return -1; }
 
 /* ---- misc kernel ---- */
 static uint64_t kuuid_state;
 static ABI int32_t kernel_uuid_create(uint8_t *uuid) {
+    KTRACE("sceKernelUuidCreate");
     if (!uuid) return KERR(22);
     struct timespec t; clock_gettime(CLOCK_REALTIME,&t);
     if (!kuuid_state) kuuid_state=(uint64_t)t.tv_nsec*6364136223846793005ULL+(uint64_t)t.tv_sec+1;
@@ -188,6 +224,7 @@ static ABI int32_t kernel_uuid_create(uint8_t *uuid) {
     return 0;
 }
 static ABI int32_t kernel_is_stack(const void *addr,void **start,void **end) {
+    KTRACE("sceKernelIsStack");
     (void)addr; (void)start; (void)end;
     return KERR(22);                    /* "not a stack address": the safe answer */
 }
@@ -202,11 +239,13 @@ static ABI int32_t kernel_load_start_module(const char *path,uint64_t args,const
     return KERR(2);
 }
 static ABI int32_t kernel_pthread_getname(void *thread,char *name) {
+    KTRACE("scePthreadGetname");
     (void)thread;
     if (name) strcpy(name,"thread");
     return 0;
 }
 static ABI int32_t kernel_pthread_getschedparam(void *thread,int32_t *policy,int32_t *param) {
+    KTRACE("scePthreadGetschedparam");
     (void)thread;
     if (policy) *policy=1;              /* SCHED_FIFO, the PS4 default */
     if (param) *param=700;              /* default PS4 priority */
@@ -214,10 +253,8 @@ static ABI int32_t kernel_pthread_getschedparam(void *thread,int32_t *policy,int
 }
 
 /* ---- offline services (same answers runtime_services.c uses) ---- */
-static ABI int32_t kernel_np_signed_out(void) { return KNP_SIGNED_OUT; }
-static ABI int32_t kernel_http_network(void) { return KHTTP_NETWORK; }
-static ABI int32_t kernel_system_parameter(void) { return KSYSTEM_PARAMETER; }
 static ABI int32_t kernel_net_get_mac(uint8_t *mac,int32_t flags) {
+    KTRACE("sceNetGetMacAddress");
     (void)flags;
     if (!mac) return -1;
     static const uint8_t fake[6]={0x02,0x00,0x00,0x00,0x00,0x01};   /* locally administered */
@@ -225,16 +262,19 @@ static ABI int32_t kernel_net_get_mac(uint8_t *mac,int32_t flags) {
     return 0;
 }
 static ABI int32_t kernel_playgo_todolist(uint32_t h,void *list,uint32_t n,uint32_t *out) {
+    KTRACE("scePlayGoGetToDoList");
     (void)h; (void)list; (void)n;
     if (out) *out=0;                    /* nothing left to install */
     return 0;
 }
 static ABI int32_t kernel_playgo_eta(uint32_t h,const void *chunks,uint32_t n,uint64_t *eta) {
+    KTRACE("scePlayGoGetEta");
     (void)h; (void)chunks; (void)n;
     if (eta) *eta=0;
     return 0;
 }
 static ABI int32_t kernel_playgo_language_mask(uint32_t h,uint64_t *mask) {
+    KTRACE("scePlayGoGetLanguageMask");
     (void)h;
     if (mask) *mask=~UINT64_C(0);       /* every language available */
     return 0;
@@ -276,40 +316,40 @@ static ABI int32_t kernel_playgo_language_mask(uint32_t h,uint64_t *mask) {
 {"sem_post",kernel_sem_post},
 {"sem_wait",kernel_sem_wait},
 {"sem_timedwait",kernel_sem_timedwait},
-{"connect",kernel_sock_fail},
-{"recv",kernel_sock_fail},
-{"send",kernel_sock_fail},
-{"select",kernel_sock_fail},
-{"shutdown",kernel_sock_fail},
+{"connect",kst_connect},
+{"recv",kst_recv},
+{"send",kst_send},
+{"select",kst_select},
+{"shutdown",kst_shutdown},
 {"sceKernelUuidCreate",kernel_uuid_create},
 {"sceKernelIsStack",kernel_is_stack},
 {"sceKernelDlsym",kernel_dlsym},
 {"sceKernelLoadStartModule",kernel_load_start_module},
 {"scePthreadGetname",kernel_pthread_getname},
 {"scePthreadGetschedparam",kernel_pthread_getschedparam},
-{"scePthreadSetschedparam",kernel_ok},
-{"pthread_setschedparam",kernel_ok},
-{"scePthreadCancel",kernel_ok},
-{"sceKernelGetGPI",kernel_ok},
-{"sceKernelGetPageTableStats",kernel_ok},
-{"sceKernelMtypeprotect",kernel_ok},
-{"sceKernelSetPrtAperture",kernel_ok},
-{"sceKernelSetVirtualRangeName",kernel_ok},
-{"sceCoredumpAttachMemoryRegion",kernel_ok},
-{"sceCoredumpRegisterCoredumpHandler",kernel_ok},
-{"sceCoredumpWriteUserData",kernel_ok},
-{"scePlayGoDialogOpen",kernel_ok},
-{"scePlayGoSetLanguageMask",kernel_ok},
+{"scePthreadSetschedparam",kst_scePthreadSetschedparam},
+{"pthread_setschedparam",kst_pthread_setschedparam},
+{"scePthreadCancel",kst_scePthreadCancel},
+{"sceKernelGetGPI",kst_sceKernelGetGPI},
+{"sceKernelGetPageTableStats",kst_sceKernelGetPageTableStats},
+{"sceKernelMtypeprotect",kst_sceKernelMtypeprotect},
+{"sceKernelSetPrtAperture",kst_sceKernelSetPrtAperture},
+{"sceKernelSetVirtualRangeName",kst_sceKernelSetVirtualRangeName},
+{"sceCoredumpAttachMemoryRegion",kst_sceCoredumpAttachMemoryRegion},
+{"sceCoredumpRegisterCoredumpHandler",kst_sceCoredumpRegisterCoredumpHandler},
+{"sceCoredumpWriteUserData",kst_sceCoredumpWriteUserData},
+{"scePlayGoDialogOpen",kst_scePlayGoDialogOpen},
+{"scePlayGoSetLanguageMask",kst_scePlayGoSetLanguageMask},
 {"scePlayGoGetToDoList",kernel_playgo_todolist},
 {"scePlayGoGetEta",kernel_playgo_eta},
 {"scePlayGoGetLanguageMask",kernel_playgo_language_mask},
-{"sceHttpUriEscape",kernel_http_network},
-{"sceNpGetAccountCountryA",kernel_np_signed_out},
-{"sceNpGetAccountDateOfBirthA",kernel_np_signed_out},
-{"sceNpGetAccountIdA",kernel_np_signed_out},
-{"sceNpGetAccountLanguageA",kernel_np_signed_out},
-{"sceNpTssGetData",kernel_np_signed_out},
+{"sceHttpUriEscape",kst_sceHttpUriEscape},
+{"sceNpGetAccountCountryA",kst_sceNpGetAccountCountryA},
+{"sceNpGetAccountDateOfBirthA",kst_sceNpGetAccountDateOfBirthA},
+{"sceNpGetAccountIdA",kst_sceNpGetAccountIdA},
+{"sceNpGetAccountLanguageA",kst_sceNpGetAccountLanguageA},
+{"sceNpTssGetData",kst_sceNpTssGetData},
 {"sceNetGetMacAddress",kernel_net_get_mac},
-{"sceSystemServiceGetPlatformPrivacySetting",kernel_system_parameter},
+{"sceSystemServiceGetPlatformPrivacySetting",kst_sceSystemServiceGetPlatformPrivacySetting},
 
 #endif
