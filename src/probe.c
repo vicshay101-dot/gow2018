@@ -886,6 +886,27 @@ int main(int argc, char **argv) {
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
 #endif
     protect(traps, round_page((import_count + 1) * 32), 5);
+    {
+        /* This title keeps its fixed 64 KiB direct-map address as a 64-bit immediate in the code
+         * (movabs r14, 0xfaaaa00000 at image offset 0xcd01b), stored later into a global. That
+         * value lies above what this phone can map. Every unaligned occurrence is replaced by
+         * 0x1000040000, which the runtime mapped in the test. Only the exact value is touched. */
+        const uint64_t old_hint = 0xfaaaa00000ull, new_hint = 0x1000040000ull;
+        unsigned char pat[8], rep[8];
+        uint64_t count = 0;
+        memcpy(pat, &old_hint, 8);
+        memcpy(rep, &new_hint, 8);
+        for (uint64_t off = 0; off + 8 <= size; ++off) {
+            if (memcmp(image + off, pat, 8) == 0) {
+                memcpy(image + off, rep, 8);
+                if (count < 8)
+                    printf("Patched image offset 0x%" PRIx64 ": 0x%" PRIx64 " -> 0x%" PRIx64 "\n", off, old_hint, new_hint);
+                ++count;
+                off += 7;
+            }
+        }
+        printf("Hint patch: %" PRIu64 " occurrence(s) of 0x%" PRIx64 " replaced\n", count, old_hint);
+    }
     protect(image, round_page(size), 0);
     int executable_entry = 0;
     for (uint64_t i = 0; i < ns; ++i) {
