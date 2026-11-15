@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 
+#include <cstring>
 #include <algorithm>
 #include <cstdlib>
 #include <ctime>
@@ -150,7 +151,11 @@ void Write(VAddr presented) {
         if (FILE* in = std::fopen(path.c_str(), "r")) {
             char line[512];
             int shown = 0;
-            while (shown < 600 && std::fgets(line, sizeof(line), in)) {
+            while (shown < 1500 && std::fgets(line, sizeof(line), in)) {
+                // Compact: skip the raw buffer dumps ("    [ n] ..." rows and "buffer stage" headers).
+                if (std::strncmp(line, "    [", 5) == 0 || std::strncmp(line, "  buffer stage", 14) == 0) {
+                    continue;
+                }
                 std::printf("Capture> %s", line);
                 ++shown;
             }
@@ -171,7 +176,7 @@ void FrameCapture::OnFlip(VAddr presented_address) {
         const char* v = std::getenv("GOW3_AUTO_CAPTURE");
         return !v || v[0] != '0';
     }();
-    if (auto_capture && (flip_number == 300 || flip_number == 900)) {
+    if (auto_capture && (flip_number == 100 || flip_number == 300 || flip_number == 600 || flip_number == 1200)) {
         requested.store(true, std::memory_order_release);
     }
     static const char* trigger = std::getenv("GOW3_CAPTURE_TRIGGER");
