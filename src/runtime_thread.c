@@ -399,6 +399,143 @@ static ABI int32_t posix_create(GuestThread **t,ThreadAttr **a,GuestEntry e,void
 static ABI int32_t posix_create_name(GuestThread **t,ThreadAttr **a,GuestEntry e,void *arg,const char *name) { return posix(create(t,a,e,arg,name)); }
 static ABI int32_t posix_join(GuestThread *t,void **r) { return posix(thread_join(t,r)); }
 
+#ifndef _WIN32
+/* ---- libSceFiber on host threads (to be spliced into runtime_thread.c) ----
+ * A fiber runs on its own host pthread, but for the game it is part of the thread that runs it:
+ * it adopts that thread's GuestThread record (TCB, GS, keys, errno). Control passes with
+ * semaphores, so exactly one of {the running thread, the fiber} executes at a time. */
+#include <semaphore.h>
+#define FIBER_MAGIC UINT64_C(0x5245424946325247) /* "GR2FIBER" */
+#define FIBER_ERR_NULL ((int32_t)0x80590001)
+#define FIBER_ERR_INVALID ((int32_t)0x80590004)
+#define FIBER_ERR_PERMISSION ((int32_t)0x80590005)
+#define FIBER_ERR_STATE ((int32_t)0x80590006)
+typedef void (ABI *FiberEntry)(uint64_t arg_on_initialize,uint64_t arg_on_run);
+typedef struct HostFiber {
+    pthread_t host;
+    sem_t wake;                  /* posted to let this fiber continue */
+    sem_t *caller_wake;          /* whoever is waiting for this fiber to yield back */
+    GuestThread *owner;          /* the guest thread whose TCB/GS this fiber uses */
+    FiberEntry entry;
+    uint64_t arg_on_initialize, arg_to_deliver;
+    uint64_t *resume_out;        /* where this fiber's next arg_on_run is stored */
+    uint64_t *return_out;        /* where ReturnToThread's argument is stored */
+    unsigned char *stack; size_t stack_size; int owns_stack;
+    int started, running;
+    char name[32];
+} HostFiber;
+typedef struct { uint64_t magic; HostFiber *host; } GuestFiber;
+static _Thread_local HostFiber *fiber_current;
+static _Thread_local sem_t thread_wake;
+static _Thread_local int thread_wake_ready;
+
+static sem_t *my_wake(void) {
+    if (fiber_current) return &fiber_current->wake;
+    if (!thread_wake_ready) { sem_init(&thread_wake,0,0); thread_wake_ready=1; }
+    return &thread_wake;
+}
+static HostFiber *fiber_of(void *guest) {
+    GuestFiber *g=guest;
+    return g && g->magic==FIBER_MAGIC ? g->host : NULL;
+}
+/* The host thread that runs a fiber takes over the TCB/GS of the guest thread that resumed it. */
+static void adopt(GuestThread *t) { if (t) { current=t; set_gs(t->tcb); } }
+
+static void *fiber_start(void *p) {
+    HostFiber *f=p;
+    fiber_current=f;
+    adopt(f->owner);
+    if (f->stack) guest_cpu_thread_stack(f->stack+f->stack_size,f->stack_size);
+    const uint64_t args[2]={f->arg_on_initialize,f->arg_to_deliver};
+    guest_cpu_call((uintptr_t)f->entry,2,args);
+    fprintf(stderr,"STOP: fiber %s returned from its entry function\n",f->name);
+    abort();
+}
+/* Hands control to f with `value`; the caller then waits on `caller_wake`. */
+static int32_t fiber_resume(HostFiber *f,uint64_t value,sem_t *caller_wake,GuestThread *owner) {
+    if (f->started && f->resume_out) *f->resume_out=value;
+    f->arg_to_deliver=value;
+    f->caller_wake=caller_wake;
+    f->owner=owner;
+    f->running=1;
+    if (!f->started) {
+        f->started=1;
+        int e=pthread_create(&f->host,NULL,fiber_start,f);
+        if (e) { f->started=0; f->running=0; return FIBER_ERR_INVALID; }
+        pthread_detach(f->host);
+    } else {
+        sem_post(&f->wake);
+    }
+    return 0;
+}
+static ABI int32_t fiber_initialize(void *guest,const char *name,FiberEntry entry,uint64_t arg_on_initialize,
+                                    void *context,uint64_t context_size,const void *option,uint32_t build_version) {
+    (void)option; (void)build_version;
+    if (!guest || !entry) return FIBER_ERR_NULL;
+    HostFiber *f=calloc(1,sizeof(*f));
+    if (!f) return FIBER_ERR_INVALID;
+    sem_init(&f->wake,0,0);
+    f->entry=entry; f->arg_on_initialize=arg_on_initialize;
+    snprintf(f->name,sizeof(f->name),"%s",name ? name : "");
+    size_t size=(size_t)context_size;
+    if (context && size>=16384) { f->stack=context; f->stack_size=size; }
+    else {
+        f->stack_size=size<65536 ? 65536 : size;
+        f->stack=malloc(f->stack_size);
+        if (!f->stack) { sem_destroy(&f->wake); free(f); return FIBER_ERR_INVALID; }
+        f->owns_stack=1;
+    }
+    ((GuestFiber *)guest)->host=f;
+    ((GuestFiber *)guest)->magic=FIBER_MAGIC;
+    return 0;
+}
+static ABI int32_t fiber_finalize(void *guest) {
+    HostFiber *f=fiber_of(guest);
+    if (!f) return FIBER_ERR_INVALID;
+    if (f->running) return FIBER_ERR_STATE;
+    ((GuestFiber *)guest)->magic=0;
+    /* A started fiber's host thread is still blocked on its semaphore: it is kept, not freed. */
+    if (!f->started) { sem_destroy(&f->wake); if (f->owns_stack) free(f->stack); free(f); }
+    return 0;
+}
+static ABI int32_t fiber_run(void *guest,uint64_t arg_on_run_to,uint64_t *arg_on_return) {
+    HostFiber *f=fiber_of(guest);
+    if (!f) return FIBER_ERR_INVALID;
+    if (fiber_current) return FIBER_ERR_PERMISSION;   /* only a thread runs a fiber */
+    if (f->running) return FIBER_ERR_STATE;
+    sem_t *me=my_wake();
+    f->return_out=arg_on_return;
+    int32_t r=fiber_resume(f,arg_on_run_to,me,runtime_thread_current());
+    if (r) return r;
+    sem_wait(me);
+    return 0;
+}
+static ABI int32_t fiber_switch(void *guest,uint64_t arg_on_run_to,uint64_t *arg_on_run) {
+    HostFiber *to=fiber_of(guest), *from=fiber_current;
+    if (!to) return FIBER_ERR_INVALID;
+    if (!from) return FIBER_ERR_PERMISSION;
+    if (to->running) return FIBER_ERR_STATE;
+    from->resume_out=arg_on_run;
+    from->running=0;
+    int32_t r=fiber_resume(to,arg_on_run_to,&from->wake,from->owner);
+    if (r) { from->running=1; return r; }
+    sem_wait(&from->wake);
+    adopt(from->owner);
+    return 0;
+}
+static ABI int32_t fiber_return_to_thread(uint64_t arg_on_return,uint64_t *arg_on_run) {
+    HostFiber *from=fiber_current;
+    if (!from) return FIBER_ERR_PERMISSION;
+    if (from->return_out) *from->return_out=arg_on_return;
+    from->resume_out=arg_on_run;
+    from->running=0;
+    sem_post(from->caller_wake);
+    sem_wait(&from->wake);
+    adopt(from->owner);
+    return 0;
+}
+#endif /* !_WIN32 */
+
 uintptr_t runtime_thread_resolve(const char *name) {
     static const struct { const char *nid; void *fn; } table[]={
         {"aI+OeCz8xrQ#libkernel",thread_self}, {"EotR8a3ASf4#libkernel",thread_self},
@@ -420,6 +557,9 @@ uintptr_t runtime_thread_resolve(const char *name) {
         {"euKRgm0Vn2M#libkernel",posix_attr_set_param}, {"OxhIB8LB-PQ#libkernel",posix_create},
         {"Jmi+9w9u0E4#libkernel",posix_create_name}, {"h9CcP3J0oVM#libkernel",posix_join},
         {"FJrT5LuUBAU#libkernel",thread_exit},
+        {"hVYD7Ou2pCQ#libSceFiber",fiber_initialize}, {"JeNX5F-NzQU#libSceFiber",fiber_finalize},
+        {"a0LLrZWac0M#libSceFiber",fiber_run}, {"PFT2S-tJ7Uk#libSceFiber",fiber_switch},
+        {"B0ZX2hx9DMw#libSceFiber",fiber_return_to_thread},
     };
     for (size_t i=0;i<sizeof(table)/sizeof(*table);++i)
         if (!strcmp(name,table[i].nid)) return (uintptr_t)table[i].fn;
