@@ -77,7 +77,14 @@ static ABI int32_t addon_list(uint32_t service,void *list,uint32_t capacity,uint
     if (hits) *hits=0;
     ++lists; return 0;
 }
+/* sceSysmoduleLoadModuleInternalWithArg(id, argc, argv, flags, result): host modules, always loaded. */
+static ABI int32_t module_load_internal(uint32_t id,uint64_t argc,const void *argv,const void *flags,int32_t *result) {
+    (void)id; (void)argc; (void)argv; (void)flags;
+    if (result) *result=0;
+    return 0;
+}
 uintptr_t runtime_content_resolve(const char *name) {
+    if (!strcmp(name,"hHrGoGoNf+s#libSceSysmodule")) return (uintptr_t)module_load_internal;
     if (!strcmp(name,"g8cM39EUZ6o#libSceSysmodule")) return (uintptr_t)module_load;
     if (!strcmp(name,"fMP5NHUOaMk#libSceSysmodule")) return (uintptr_t)module_loaded;
     if (!strcmp(name,"eR2bZFAAU0Q#libSceSysmodule")) return (uintptr_t)module_unload;
