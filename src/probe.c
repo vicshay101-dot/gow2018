@@ -291,22 +291,63 @@ static void fault(int sig, siginfo_t *info, void *context) {
             }
         }
 #endif
-        int mfd=open("/proc/self/maps",O_RDONLY);
-        if (mfd>=0) {
-            static char maps[65536]; ssize_t n=read(mfd,maps,sizeof(maps)-1); close(mfd);
-            if (n>0) {
-                maps[n]=0; char *ln=maps;
+        {
+            /* Safe reads (process_vm_readv) so a bad pointer cannot fault again. */
+            #define SAFE_READ(dst,addr,len) ({ struct iovec l_={(dst),(len)}, r_={(void *)(uintptr_t)(addr),(len)}; process_vm_readv(getpid(),&l_,1,&r_,1,0)==(ssize_t)(len); })
+            static char maps[1<<20]; size_t used=0; int mfd=open("/proc/self/maps",O_RDONLY);
+            if (mfd>=0) { ssize_t n; while (used<sizeof(maps)-1 && (n=read(mfd,maps+used,sizeof(maps)-1-used))>0) used+=(size_t)n; close(mfd); }
+            maps[used]=0;
+            uintptr_t probes[3]={rip,0,0};
+#if defined(__aarch64__)
+            probes[1]=((const ucontext_t *)context)->uc_mcontext.regs[30];
+            probes[2]=((const ucontext_t *)context)->uc_mcontext.regs[28];
+#endif
+            for (int k=0;k<3;++k) {
+                if (!probes[k]) continue;
+                char *ln=maps;
                 while (ln && *ln) {
                     char *nl=strchr(ln,'\n'); if (nl) *nl=0;
                     unsigned long lo=0,hi=0;
-                    if (sscanf(ln,"%lx-%lx",&lo,&hi)==2 && rip>=lo && rip<hi) {
-                        snprintf(line,sizeof(line),"  pc mapping: %s (pc-start=0x%lx)\n",ln,(unsigned long)(rip-lo));
+                    if (sscanf(ln,"%lx-%lx",&lo,&hi)==2 && probes[k]>=lo && probes[k]<hi) {
+                        snprintf(line,sizeof(line),"  %s mapping: %s (offset in mapping 0x%lx)\n",k==0?"pc":k==1?"lr":"x28",ln,(unsigned long)(probes[k]-lo));
                         { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
                         break;
                     }
+                    if (nl) *nl='\n';
                     ln=nl?nl+1:NULL;
                 }
             }
+            unsigned char code[64];
+            if (SAFE_READ(code,rip-32,sizeof(code))) {
+                int o=snprintf(line,sizeof(line),"  code around pc (pc-32..pc+32):");
+                for (size_t i=0;i<sizeof(code) && o<(int)sizeof(line)-4;++i) o+=snprintf(line+o,sizeof(line)-(size_t)o," %02x",code[i]);
+                snprintf(line+o,sizeof(line)-(size_t)o,"\n"); { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+            }
+            /* Guest stack: return addresses (image offsets) show who called what. */
+            uintptr_t gsp=in_guest ? (uintptr_t)regs.gpr[GUEST_RSP] : 0;
+            uint64_t stk[48];
+            if (gsp && SAFE_READ(stk,gsp,sizeof(stk))) {
+                for (int i=0;i<48;i+=4) {
+                    snprintf(line,sizeof(line),"  gstack+0x%x: %lx %lx %lx %lx\n",i*8,(unsigned long)stk[i],(unsigned long)stk[i+1],(unsigned long)stk[i+2],(unsigned long)stk[i+3]);
+                    { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+                }
+                for (int i=0;i<48;++i)
+                    if (stk[i]>=(uintptr_t)image && stk[i]<(uintptr_t)image+0x3000000) {
+                        snprintf(line,sizeof(line),"  gstack ret candidate [%d]: image+0x%lx\n",i,(unsigned long)(stk[i]-(uintptr_t)image));
+                        { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+                    }
+            }
+#if defined(__aarch64__)
+            /* FEX keeps its CPU state (guest RIP first, then the 16 GPRs) at the pointer in x28/x0. */
+            const uintptr_t st[2]={((const ucontext_t *)context)->uc_mcontext.regs[28],((const ucontext_t *)context)->uc_mcontext.regs[0]};
+            for (int k=0;k<2;++k) {
+                uint64_t q[20];
+                if (st[k] && SAFE_READ(q,st[k],sizeof(q))) {
+                    snprintf(line,sizeof(line),"  state@%lx rip?=%lx (image+0x%lx) g0-3=%lx %lx %lx %lx\n",(unsigned long)st[k],(unsigned long)q[0],(unsigned long)(q[0]-(uintptr_t)image),(unsigned long)q[1],(unsigned long)q[2],(unsigned long)q[3],(unsigned long)q[4]);
+                    { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+                }
+            }
+#endif
         }
     }
     if (gpu_enabled) gow3gpu_dump_guest_writes(context);
