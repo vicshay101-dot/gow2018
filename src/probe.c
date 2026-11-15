@@ -851,8 +851,9 @@ int main(int argc, char **argv) {
         }
         memcpy(image + relocs[i].target, &value, 8);
     }
-    if (check_imports) {
-        /* Lists every import the game would stop at, without running it (needs the GPU
+    {
+        /* Lists every import the game would stop at (always printed, so one run shows them all);
+         * --check-imports stops here without running the game (needs the GPU
          * library: without --cpu-only its symbols are registered above). */
         unsigned char *checked=calloc(import_count ? import_count : 1,1);
         if (!checked) fail("allocation failed");
@@ -867,7 +868,7 @@ int main(int argc, char **argv) {
         }
         printf("Imports: %" PRIu64 " missing\n",missing);
         fflush(NULL);
-        _exit(missing ? 1 : 0); /* no destructors: GPU threads are running */
+        if (check_imports) _exit(missing ? 1 : 0); /* no destructors: GPU threads are running */
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
 #if defined(GUEST_CPU_NATIVE)
