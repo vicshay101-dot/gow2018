@@ -246,7 +246,7 @@ static void fault(int sig, siginfo_t *info, void *context) {
     GuestRegs regs;
     const int in_guest = guest_cpu_signal_regs(context, &regs);
     uintptr_t rip = in_guest == GUEST_CPU_IN_GUEST ? (uintptr_t)regs.rip : guest_cpu_host_pc(context);
-    char line[512];
+    char line[1024];
     Dl_info where;
     if (rip - (uintptr_t)image < 0x10000000)
         snprintf(line, sizeof(line), "Guest fault (signal %d) at guest offset 0x%lx, address %p\n",
@@ -336,6 +336,23 @@ static void fault(int sig, siginfo_t *info, void *context) {
                         snprintf(line,sizeof(line),"  gstack ret candidate [%d]: image+0x%lx\n",i,(unsigned long)(stk[i]-(uintptr_t)image));
                         { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
                     }
+            }
+            /* Guest code bytes (x86-64) around the likely crash site and the stack return addresses, to disassemble offline. */
+            {
+                uintptr_t sites[10]; int ns_=0;
+#if defined(__aarch64__)
+                sites[ns_++]=((const ucontext_t *)context)->uc_mcontext.regs[20];
+#endif
+                if (gsp && SAFE_READ(stk,gsp,sizeof(stk)))
+                    for (int i=0;i<48 && ns_<10;++i)
+                        if (stk[i]>=(uintptr_t)image && stk[i]<(uintptr_t)image+0x3000000) sites[ns_++]=stk[i];
+                for (int k=0;k<ns_;++k) {
+                    unsigned char b[96];
+                    if (!SAFE_READ(b,sites[k]-64,sizeof(b))) continue;
+                    int o=snprintf(line,sizeof(line),"  guest code image+0x%lx (-64..+32):",(unsigned long)(sites[k]-(uintptr_t)image));
+                    for (size_t i=0;i<sizeof(b) && o<(int)sizeof(line)-4;++i) o+=snprintf(line+o,sizeof(line)-(size_t)o,"%02x",b[i]);
+                    snprintf(line+o,sizeof(line)-(size_t)o,"\n"); { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+                }
             }
 #if defined(__aarch64__)
             /* FEX keeps its CPU state (guest RIP first, then the 16 GPRs) at the pointer in x28/x0. */
@@ -1020,6 +1037,31 @@ int main(int argc, char **argv) {
             }
         }
         printf("Hint patch: %" PRIu64 " occurrence(s) of 0x%" PRIx64 " replaced\n", count, old_hint);
+    }
+    {
+        /* `int 0x41` is the SDK's debugger break (assert). The game runs on past it when no debugger is
+         * attached (the code after it is the normal failure path), but FEX turns it into a fatal fault.
+         * Replaced by two NOPs at: image offset 0x32a4f7 (seen crashing), plus every offset listed (hex,
+         * one per line) in /sdcard/Download/gow2018_int41_offsets.txt (made by scan_int41.py). Only
+         * bytes that are exactly cd 41 are touched. */
+        uint64_t done = 0, skipped = 0;
+        uint64_t offs[4096]; size_t no = 0;
+        offs[no++] = 0x32a4f7;
+        FILE *lf = fopen("/sdcard/Download/gow2018_int41_offsets.txt", "r");
+        if (lf) {
+            char l[64];
+            while (no < 4096 && fgets(l, sizeof(l), lf)) {
+                char *e; unsigned long long v = strtoull(l, &e, 16);
+                if (e != l) offs[no++] = v;
+            }
+            fclose(lf);
+        }
+        for (size_t i = 0; i < no; ++i) {
+            if (offs[i] + 2 <= size && image[offs[i]] == 0xcd && image[offs[i] + 1] == 0x41) {
+                image[offs[i]] = 0x90; image[offs[i] + 1] = 0x90; ++done;
+            } else ++skipped;
+        }
+        printf("INT 0x41 patch: %" PRIu64 " site(s) replaced by NOPs, %" PRIu64 " skipped\n", done, skipped);
     }
     protect(image, round_page(size), 0);
     int executable_entry = 0;
