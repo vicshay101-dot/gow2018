@@ -340,6 +340,35 @@ static int32_t memory_io(void *buffer, uint64_t size, int64_t offset, int write)
 static ABI int32_t memory_get(int32_t user, void *buffer, uint64_t size, int64_t offset) { (void)user; return memory_io(buffer,size,offset,0); }
 static ABI int32_t memory_set(int32_t user, void *buffer, uint64_t size, int64_t offset) { (void)user; return memory_io(buffer,size,offset,1); }
 
+/* SaveDataMemory2 wrappers over the single-slot memory above (slots are not separated). */
+typedef struct { void *buf; uint64_t size; int64_t offset; } MemData2;
+typedef struct { uint32_t option; int32_t user; uint64_t memory_size, icon_size; const Param *param; const void *icon; uint32_t slot; } Setup2;
+typedef struct { int32_t user; char pad[4]; MemData2 *data; void *param, *icon; uint32_t slot; } Get2;
+typedef struct { int32_t user; char pad[4]; const MemData2 *data; const Param *param; const void *icon; uint32_t data_num, slot; } Set2;
+static ABI int32_t memory_setup2(const Setup2 *p, uint64_t *result) {
+    if (!p) return ERR_PARAMETER;
+    uint64_t before=memory_size;
+    int32_t r=memory_setup(p->user,p->memory_size,p->param);
+    if (!r && result) { result[0]=before; result[1]=0; result[2]=0; }
+    return r;
+}
+static ABI int32_t memory_get2(const Get2 *p) {
+    if (!p || !p->data) return ERR_PARAMETER;
+    return memory_io(p->data->buf,p->data->size,p->data->offset,0);
+}
+static ABI int32_t memory_set2(const Set2 *p) {
+    if (!p || !p->data) return ERR_PARAMETER;
+    for (uint32_t i=0;i<(p->data_num ? p->data_num : 1);++i) {
+        int32_t r=memory_io(p->data[i].buf,p->data[i].size,p->data[i].offset,1);
+        if (r) return r;
+    }
+    return 0;
+}
+static ABI int32_t memory_sync(const void *p) { (void)p; return initialized ? 0 : ERR_NOT_INITIALIZED; } /* writes are direct */
+static ABI int32_t save_event_result(const void *param, void *event) {
+    (void)param; (void)event;
+    return initialized ? ERR_NOT_FOUND : ERR_NOT_INITIALIZED; /* no pending events */
+}
 static const RuntimeExport exports[]={
     {"sceSaveDataInitialize",save_initialize}, {"sceSaveDataInitialize2",save_initialize},
     {"sceSaveDataInitialize3",save_initialize}, {"sceSaveDataTerminate",save_terminate},
@@ -348,6 +377,9 @@ static const RuntimeExport exports[]={
     {"sceSaveDataDirNameSearch",save_search},
     {"sceSaveDataSetupSaveDataMemory",memory_setup}, {"sceSaveDataGetSaveDataMemory",memory_get},
     {"sceSaveDataSetSaveDataMemory",memory_set},
+    {"sceSaveDataSetupSaveDataMemory2",memory_setup2}, {"sceSaveDataGetSaveDataMemory2",memory_get2},
+    {"sceSaveDataSetSaveDataMemory2",memory_set2}, {"sceSaveDataSyncSaveDataMemory",memory_sync},
+    {"sceSaveDataGetEventResult",save_event_result},
 };
 uintptr_t runtime_savedata_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
 void runtime_savedata_report(void) { printf("Runtime: save data mounts=%zu, memory writes=%zu\n",mounts_done,memory_writes); }
