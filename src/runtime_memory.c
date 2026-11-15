@@ -389,6 +389,7 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
             size=fit;
         }
     }
+    fprintf(stderr,"Runtime: place kind=%d address=0x%" PRIxPTR " size=0x%" PRIx64 " before host_map\n",kind,address,size);
     if (host_map(address,size,host_prot(prot),kind==KIND_RESERVED,phys)) {
         int host_errno=errno;
         fprintf(stderr,"Runtime: HOST MMAP FAILED addr=%p size=%" PRIu64 " phys=0x%" PRIx64 " kind=%d errno=%d (%s)\n",
@@ -413,7 +414,9 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
                 queue_hook(HOOK_UNMAP,a,e-a);
             }
     }
+    fprintf(stderr,"Runtime: place host_map ok, dropping old mappings\n");
     drop_range(address,address+size);
+    fprintf(stderr,"Runtime: place dropped, inserting VMA\n");
     Vma v={address,address+size,kind,prot,type,phys};
     if (vma_insert(vma_index(address),v)) return NO_MEMORY;
     if (kind==KIND_FLEXIBLE) flexible_bytes+=size;
@@ -641,6 +644,7 @@ static ABI int32_t reserve_range(void **inout, uint64_t size, int flags, uint64_
         write_unlock(); return NO_MEMORY;
     }
     int32_t result=place(inout,size,0,flags,alignment,KIND_RESERVED,0,0);
+    fprintf(stderr,"Runtime: reserve_range place returned 0x%x\n",(unsigned)result);
     write_unlock();
     if (!result) printf("Runtime: reserved virtual range %p, size=%" PRIu64 "\n", *inout, size);
     return result;
