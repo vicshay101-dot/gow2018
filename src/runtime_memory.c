@@ -47,6 +47,9 @@ static uint64_t pool_size_bytes(void) {
 #define ACCESS ((int32_t)UINT32_C(0x8002000d))
 #define NO_SPACE ((int32_t)UINT32_C(0x80020023))
 #define MAP_FIXED_FLAG 0x10
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0x100000
+#endif
 #define MAP_NO_OVERWRITE 0x80
 enum { KIND_RESERVED=1, KIND_DIRECT, KIND_FLEXIBLE };
 typedef struct { uint64_t start, size; int type, used; } Block;
@@ -257,7 +260,10 @@ void runtime_memory_reserve(void) {}
 static int host_map(uintptr_t address, uint64_t size, int prot, int reserved, uint64_t phys) {
     void *mapped = !reserved
         ? mmap((void *)address,size,prot,MAP_SHARED|MAP_FIXED,pool_fd,(off_t)phys)
-        : mmap((void *)address,size,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE|MAP_FIXED,-1,0);
+        : mmap((void *)address,size,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE|MAP_FIXED_NOREPLACE,-1,0);
+    /* Reservations never replace host mappings: the guest VMA table does not know about libraries,
+     * heaps or driver memory in the same range, and MAP_FIXED would unmap them under the running code.
+     * An occupied range fails (EEXIST) and the reservation fails as it did before. */
     return mapped==MAP_FAILED ? -1 : 0;
 }
 static int host_unmap(uintptr_t address, uint64_t size) { return munmap((void *)address,size); }
