@@ -606,6 +606,10 @@ static ABI int32_t discmap_8a82(const char *path,int64_t offset,int64_t size,int
     (void)path; (void)offset; (void)size; (void)flags; (void)r1; (void)r2; return DISC_MAP_NO_BITMAP;
 }
 
+static ABI int32_t discmap_7c98(const char *path,int64_t offset,int64_t size,int32_t *a,int32_t *b) {
+    (void)path; (void)offset; (void)size; (void)a; (void)b; return DISC_MAP_NO_BITMAP;
+}
+
 /* ---- Devices that are absent: mouse, microphone, voice chat ---- */
 /* A mouse port opens but never reports a connected device. */
 static ABI int32_t mouse_open(int32_t user,int32_t type,int32_t index,const void *param) { (void)user; (void)type; (void)index; (void)param; return new_id(); }
@@ -740,7 +744,7 @@ static const RuntimeExport exports[]={
     {"scePlayGoSetToDoList",playgo_todo}, {"scePlayGoClose",playgo_close}, {"scePlayGoTerminate",playgo_terminate},
     {"sceMouseInit",ok_void}, {"sceMouseOpen",mouse_open}, {"sceMouseRead",mouse_read}, {"sceMouseClose",mouse_close},
     {"sceAudioInOpen",audio_in_open},
-    {"sceDiscMapIsRequestOnHDD",discmap_on_hdd}, {"sceDiscMap_8A828CAEE7EDD5E9",discmap_8a82},
+    {"sceDiscMapIsRequestOnHDD",discmap_on_hdd}, {"sceDiscMap_8A828CAEE7EDD5E9",discmap_8a82}, {"sceDiscMap_7C980FFB0AA27E7A",discmap_7c98},
     {"sceVoiceInit",ok_void}, {"sceVoiceEnd",ok_void},
 };
 uintptr_t runtime_services_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
