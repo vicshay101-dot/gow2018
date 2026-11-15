@@ -126,6 +126,36 @@ static ABI int32_t kernel_gettimezone(GuestTimezone *tz) {
 #endif
     return 0;
 }
+/* sceKernelConvertUtcToLocaltime(time, *local, *timesec{t,west_sec,dst_sec}, *dst_sec) */
+typedef struct { int64_t t; uint32_t west_sec, dst_sec; } GuestTimesec;
+static ABI int32_t kernel_utc_to_local(int64_t utc,int64_t *local,GuestTimesec *st,uint64_t *dst) {
+    time_t t=(time_t)utc; struct tm tm;
+#ifdef _WIN32
+    int64_t off=compat_utc_offset(t); int isdst=0;
+#else
+    localtime_r(&t,&tm); int64_t off=tm.tm_gmtoff; int isdst=tm.tm_isdst>0;
+#endif
+    (void)tm;
+    int64_t dst_sec=isdst ? 3600 : 0, west=off-dst_sec;
+    if (local) *local=utc+off;
+    if (st) { st->t=utc; st->west_sec=(uint32_t)west; st->dst_sec=(uint32_t)dst_sec; }
+    if (dst) *dst=(uint64_t)dst_sec;
+    return 0;
+}
+/* sceKernelConvertLocaltimeToUtc(time, unused, *utc, *timezone, *dst_seconds) */
+static ABI int32_t kernel_local_to_utc(int64_t local,int64_t unused,int64_t *utc,GuestTimezone *tz,int32_t *dst) {
+    (void)unused;
+    if (!tz) return ERR(22);
+    kernel_gettimezone(tz);
+    if (utc) *utc=local-((int64_t)tz->minuteswest+tz->dsttime)*60;
+    if (dst) *dst=tz->dsttime*60;
+    return 0;
+}
+/* Unwinder queries about guest modules: no module info is exported. */
+static ABI int32_t kernel_module_info_unwind(uint64_t address,int32_t flags,void *info) {
+    (void)address; (void)flags; (void)info; return ERR(3);
+}
+static ABI int32_t kernel_module_segment_info(void *info) { (void)info; return ERR(3); }
 static ABI int32_t posix_gettimeofday(GuestTimeval *tv,GuestTimezone *tz) {
     struct timeval t;
     gettimeofday(&t,NULL);
@@ -345,6 +375,9 @@ static const RuntimeExport exports[]={
     {"sceKernelReadTsc",read_tsc}, {"sceKernelGetTscFrequency",tsc_frequency},
     {"sceKernelUsleep",kernel_usleep}, {"usleep",posix_usleep}, {"sleep",posix_sleep},
     {"nanosleep",posix_nanosleep}, {"sceKernelNanosleep",kernel_nanosleep},
+    {"sceKernelConvertUtcToLocaltime",kernel_utc_to_local}, {"sceKernelConvertLocaltimeToUtc",kernel_local_to_utc},
+    {"sceKernelGetModuleInfoForUnwind",kernel_module_info_unwind},
+    {"sceKernelInternalMemoryGetModuleSegmentInfo",kernel_module_segment_info},
     {"sceKernelGettimezone",kernel_gettimezone}, {"gettimeofday",posix_gettimeofday},
     {"sceKernelGettimeofday",kernel_gettimeofday},
     {"time",posix_time},
