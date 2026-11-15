@@ -162,3 +162,17 @@ extern "C" void gow3gpu_dump_guest_writes(void* ucontext) {
     }
     std::fprintf(stderr, "Write log: %llu writes logged\n", (unsigned long long)n);
 }
+
+/* Progress counters for the loader's heartbeat: flips submitted/presented, draws, dispatches. */
+extern "C" {
+unsigned long long gow3_stat_flips_submitted, gow3_stat_flips_presented, gow3_stat_draws, gow3_stat_dispatches;
+unsigned long long gow3gpu_stat(int which) {
+    switch (which) {
+    case 0: return __atomic_load_n(&gow3_stat_flips_submitted, __ATOMIC_RELAXED);
+    case 1: return __atomic_load_n(&gow3_stat_flips_presented, __ATOMIC_RELAXED);
+    case 2: return __atomic_load_n(&gow3_stat_draws, __ATOMIC_RELAXED);
+    case 3: return __atomic_load_n(&gow3_stat_dispatches, __ATOMIC_RELAXED);
+    }
+    return 0;
+}
+}

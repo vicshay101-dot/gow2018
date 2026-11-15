@@ -28,6 +28,7 @@
 #include "core/libraries/videoout/videoout_error.h"
 #include "imgui/renderer/imgui_core.h"
 #include "video_core/amdgpu/liverpool.h"
+extern "C" unsigned long long gow3_stat_flips_submitted, gow3_stat_flips_presented;
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -301,6 +302,7 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 }
 
 void VideoOutDriver::Flip(const Request& req) {
+    __atomic_add_fetch(&gow3_stat_flips_presented, 1, __ATOMIC_RELAXED);
     // Update HDR status before presenting, then present the frame (gow3: on the swap thread).
     RunPresenter([this, frame = req.frame, hdr = req.port->is_hdr] {
         presenter->SetHDR(hdr);
@@ -609,6 +611,7 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
             ++port->flip_status.gc_queue_num;
         }
         ++port->flip_status.flip_pending_num; // integral GPU and CPU pending flips counter
+        __atomic_add_fetch(&gow3_stat_flips_submitted, 1, __ATOMIC_RELAXED);
         port->flip_status.submit_tsc = Libraries::Kernel::sceKernelReadTsc();
     }
 

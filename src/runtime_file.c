@@ -492,4 +492,54 @@ PAIR(fstat,(int fd,GuestStat *s),(fd,s))
 PAIR(stat,(const char *p,GuestStat *s),(p,s))
 PAIR(getdents,(int fd,char *b,uint64_t n,int64_t *base),(fd,b,n,base))
 PAIR(rename,(const char *a,const char *b),(a,b))
-PAIR(ftruncate,(int
+PAIR(ftruncate,(int fd,int64_t l),(fd,l))
+PAIR(truncate,(const char *p,int64_t l),(p,l))
+PAIR(fsync,(int fd),(fd))
+static ABI int64_t posix_access(const char *p,int m) { return posix(do_access(p,m)); }
+static ABI int64_t sce_mkdir(const char *p,int m) { return sce(path_op(p,0,m)); }
+static ABI int64_t posix_mkdir(const char *p,int m) { return posix(path_op(p,0,m)); }
+static ABI int64_t sce_rmdir(const char *p) { return sce(path_op(p,1,0)); }
+static ABI int64_t posix_rmdir(const char *p) { return posix(path_op(p,1,0)); }
+static ABI int64_t sce_unlink(const char *p) { return sce(path_op(p,2,0)); }
+static ABI int64_t posix_unlink(const char *p) { return posix(path_op(p,2,0)); }
+static ABI int32_t sce_check_reachability(const char *p) {
+    GuestStat s; return (int32_t)sce(do_stat(p,&s));
+}
+
+static const RuntimeExport exports[]={
+    {"sceKernelOpen",sce_open}, {"open",posix_open}, {"_open",posix_open},
+    {"sceKernelClose",sce_close}, {"close",posix_close}, {"_close",posix_close},
+    {"sceKernelRead",sce_read}, {"read",posix_read}, {"_read",posix_read},
+    {"sceKernelPread",sce_pread}, {"pread",posix_pread},
+    {"sceKernelWrite",sce_write}, {"write",posix_write}, {"_write",posix_write},
+    {"sceKernelPwrite",sce_pwrite}, {"pwrite",posix_pwrite},
+    {"sceKernelLseek",sce_lseek}, {"lseek",posix_lseek},
+    {"sceKernelFstat",sce_fstat}, {"fstat",posix_fstat},
+    {"sceKernelStat",sce_stat}, {"stat",posix_stat},
+    {"sceKernelGetdirentries",sce_getdents}, {"getdirentries",posix_getdents},
+    {"sceKernelRename",sce_rename}, {"rename",posix_rename},
+    {"sceKernelFtruncate",sce_ftruncate}, {"ftruncate",posix_ftruncate},
+    {"sceKernelTruncate",sce_truncate}, {"truncate",posix_truncate},
+    {"sceKernelFsync",sce_fsync}, {"fsync",posix_fsync},
+    {"access",posix_access}, {"sceKernelCheckReachability",sce_check_reachability},
+    {"sceKernelMkdir",sce_mkdir}, {"mkdir",posix_mkdir},
+    {"sceKernelRmdir",sce_rmdir}, {"rmdir",posix_rmdir},
+    {"sceKernelUnlink",sce_unlink}, {"unlink",posix_unlink},
+};
+uintptr_t runtime_file_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
+/* Host-side helpers for other modules (e.g. SaveData, Fios). */
+int64_t runtime_file_open(const char *p,int f,int m) { return do_open(p,f,m); }
+int64_t runtime_file_close(int fd) { return do_close(fd); }
+int64_t runtime_file_read(int fd,void *b,uint64_t n) { return do_read(fd,b,n); }
+int64_t runtime_file_pread(int fd,void *b,uint64_t n,int64_t o) { return do_pread(fd,b,n,o); }
+int64_t runtime_file_write(int fd,const void *b,uint64_t n) { return do_write(fd,b,n); }
+int64_t runtime_file_lseek(int fd,int64_t o,int w) { return do_lseek(fd,o,w); }
+int64_t runtime_file_stat(const char *p,void *s) { return do_stat(p,s); }
+int64_t runtime_file_fstat(int fd,void *s) { return do_fstat(fd,s); }
+int64_t runtime_file_getdents(int fd,char *b,uint64_t n,int64_t *base) { return do_getdents(fd,b,n,base); }
+int runtime_file_translate(const char *guest,char *out,size_t size) { return translate(guest,out,size); }
+void runtime_file_report(void) {
+    printf("Runtime: files opened=%zu, reads=%zu (%llu bytes), writes=%zu, not found=%zu\n",
+           opens,reads,(unsigned long long)bytes_read,writes,missing);
+}
+

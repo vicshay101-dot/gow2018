@@ -929,7 +929,9 @@ bool Rasterizer::FilterDrawPasses() const {
     return !(mode == Mode::Disable && (depth_copy || stencil_copy));
 }
 
+extern "C" unsigned long long gow3_stat_draws, gow3_stat_dispatches;
 void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* prepared) {
+    __atomic_add_fetch(&gow3_stat_draws, 1, __ATOMIC_RELAXED);
     RENDERER_TRACE;
     Gow3Stats::draws.fetch_add(1, std::memory_order_relaxed);
 
@@ -1324,6 +1326,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
 }
 
 void Rasterizer::DispatchDirect() {
+    __atomic_add_fetch(&gow3_stat_dispatches, 1, __ATOMIC_RELAXED);
     RENDERER_TRACE;
     Gow3Stats::dispatches.fetch_add(1, std::memory_order_relaxed);
     // gow3: like draws, handed to the draw recording thread after the pipeline selection.
