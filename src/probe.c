@@ -695,6 +695,26 @@ void runtime_restart(void) {
 #endif
 }
 
+#ifndef _WIN32
+/* Heartbeat: one line every 5 s with RSS, available RAM and thread count. If the log just stops,
+ * the last line shows whether the process was starved of memory (Android kills it silently) or hung. */
+#include <pthread.h>
+static void *heartbeat_thread(void *arg) {
+    (void)arg;
+    for (unsigned n=1;;++n) {
+        sleep(5);
+        unsigned long rss_pages=0,total=0; FILE *f=fopen("/proc/self/statm","r");
+        if (f) { if (fscanf(f,"%lu %lu",&total,&rss_pages)!=2) rss_pages=0; fclose(f); }
+        unsigned long avail_kb=0,swap_kb=0; char key[64]; unsigned long v; f=fopen("/proc/meminfo","r");
+        if (f) { while (fscanf(f,"%63s %lu kB",key,&v)==2) { if (!strcmp(key,"MemAvailable:")) avail_kb=v; else if (!strcmp(key,"SwapFree:")) swap_kb=v; } fclose(f); }
+        unsigned threads=0; f=fopen("/proc/self/status","r");
+        if (f) { char l[128]; while (fgets(l,sizeof(l),f)) if (sscanf(l,"Threads: %u",&threads)==1) break; fclose(f); }
+        fprintf(stderr,"Heartbeat #%u: rss=%lu MiB, MemAvailable=%lu MiB, SwapFree=%lu MiB, threads=%u\n",n,rss_pages*(unsigned long)sysconf(_SC_PAGESIZE)/1048576UL,avail_kb/1024,swap_kb/1024,threads);
+        fflush(stderr);
+    }
+    return NULL;
+}
+#endif
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
 #ifdef __ANDROID__
@@ -1070,6 +1090,9 @@ int main(int argc, char **argv) {
     }
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
     entered_game=1;
+#ifndef _WIN32
+    { pthread_t hb_; if (!pthread_create(&hb_,NULL,heartbeat_thread,NULL)) pthread_detach(hb_); }
+#endif
     /* Static: the host stack may lie above 47-bit guest addresses (arm64 hosts). */
     static struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};
 #ifdef _WIN32
