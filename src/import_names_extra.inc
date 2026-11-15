@@ -124,8 +124,3 @@
 {"Xjoosiw+XPI#libkernel","sceKernelUuidCreate"},
 {"How7B8Oet6k#libkernel","scePthreadGetname"},
 {"qBDmpCyGssE#libkernel","scePthreadCancel"},
-{"hVYD7Ou2pCQ#libSceFiber","_sceFiberInitializeImpl"},
-{"JeNX5F-NzQU#libSceFiber","sceFiberFinalize"},
-{"a0LLrZWac0M#libSceFiber","sceFiberRun"},
-{"PFT2S-tJ7Uk#libSceFiber","sceFiberSwitch"},
-{"B0ZX2hx9DMw#libSceFiber","sceFiberReturnToThread"},
