@@ -378,6 +378,17 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         address=find_free(address,size,alignment);
         if (!address) return NO_MEMORY;
     }
+    /* The phone maps guest addresses below 512 GiB (39-bit VA). A reservation that would cross
+     * that limit is shrunk to fit: it only claims address space, so the game keeps its start. */
+    if (kind==KIND_RESERVED && !(flags & MAP_FIXED_FLAG)) {
+        uint64_t limit=UINT64_C(0x8000000000);
+        if (address<limit && address+size>limit) {
+            uint64_t fit=(limit-address) & ~(uint64_t)(PAGE-1);
+            fprintf(stderr,"Runtime: reservation at %p clamped from %" PRIu64 " to %" PRIu64 " bytes (host VA limit)\n",
+                    (void *)address,size,fit);
+            size=fit;
+        }
+    }
     if (host_map(address,size,host_prot(prot),kind==KIND_RESERVED,phys)) {
         int host_errno=errno;
         fprintf(stderr,"Runtime: HOST MMAP FAILED addr=%p size=%" PRIu64 " phys=0x%" PRIx64 " kind=%d errno=%d (%s)\n",
