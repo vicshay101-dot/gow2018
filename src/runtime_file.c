@@ -298,19 +298,44 @@ static int64_t do_read(int fd,void *buffer,uint64_t size) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
     touch_for_write(buffer,size);
-    ssize_t n=host_read(h,buffer,size);
-    if (n<0) { if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,errno); return -errno; }
-    __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
-    return n;
+    /* The game checks that a read returned exactly the requested size (a short count trips its
+     * assert and the asset load fails). Regular files only return less at EOF, but FUSE-backed
+     * storage and big requests can return partial counts, so keep reading until full, EOF or error. */
+    uint64_t total=0;
+    while (total<size) {
+        ssize_t n=host_read(h,(char *)buffer+total,size-total);
+        if (n<0) {
+            if (errno==EINTR) continue;
+            if (total) break;
+            if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,errno);
+            return -errno;
+        }
+        if (n==0) break;
+        total+=(uint64_t)n;
+    }
+    if (total<size) { static int shown; if (shown<20) { ++shown; fprintf(stderr,"Runtime: short read fd=%d requested=%llu got=%llu (EOF)\n",fd,(unsigned long long)size,(unsigned long long)total); } }
+    __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,total,__ATOMIC_RELAXED);
+    return (int64_t)total;
 }
 static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
     touch_for_write(buffer,size);
-    ssize_t n=pread(h,buffer,size,offset);
-    if (n<0) { if (audio_trace()) printf("Audio trace: pread(fd %d, %llu @%lld) failed, errno %d\n",fd,(unsigned long long)size,(long long)offset,errno); return -errno; }
-    __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
-    return n;
+    uint64_t total=0; /* see do_read: loop until the whole request is satisfied */
+    while (total<size) {
+        ssize_t n=pread(h,(char *)buffer+total,size-total,offset+(int64_t)total);
+        if (n<0) {
+            if (errno==EINTR) continue;
+            if (total) break;
+            if (audio_trace()) printf("Audio trace: pread(fd %d, %llu @%lld) failed, errno %d\n",fd,(unsigned long long)size,(long long)offset,errno);
+            return -errno;
+        }
+        if (n==0) break;
+        total+=(uint64_t)n;
+    }
+    if (total<size) { static int shown; if (shown<20) { ++shown; fprintf(stderr,"Runtime: short pread fd=%d requested=%llu @%lld got=%llu (EOF)\n",fd,(unsigned long long)size,(long long)offset,(unsigned long long)total); } }
+    __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,total,__ATOMIC_RELAXED);
+    return (int64_t)total;
 }
 static int64_t do_write(int fd,const void *buffer,uint64_t size) {
     int h=host_fd(fd);
