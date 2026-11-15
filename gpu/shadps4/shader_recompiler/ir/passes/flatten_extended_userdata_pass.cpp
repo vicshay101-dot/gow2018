@@ -12,6 +12,7 @@
 #include <xbyak/xbyak_util.h>
 #else
 #include <atomic>
+#include <algorithm>
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -951,6 +952,26 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
     case IR::Opcode::UMax32: return EmitComputeOffsetOp(p, pass_info, inst, OpUMax, 2);
     case IR::Opcode::BitFieldUExtract:
         return EmitComputeOffsetOp(p, pass_info, inst, OpBitFieldUExtract, 3);
+    case IR::Opcode::Phi: {
+        // gow3: loop/branch merges cannot be walked statically. Take the first operand that can
+        // be computed (the value entering the loop); the loop-carried operand loops back here
+        // and is rejected by the active list. Better than leaving the descriptor unflattened.
+        static thread_local std::vector<const IR::Inst*> active;
+        if (std::find(active.begin(), active.end(), inst) != active.end()) {
+            return false;
+        }
+        active.push_back(inst);
+        bool ok = false;
+        for (size_t i = 0; i < inst->NumArgs() && !ok; ++i) {
+            SrtProgram attempt;
+            if (EmitOperand(attempt, pass_info, inst->Arg(i))) {
+                p.insert(p.end(), attempt.begin(), attempt.end());
+                ok = true;
+            }
+        }
+        active.pop_back();
+        return ok;
+    }
     default:
         LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}",
                   magic_enum::enum_name(inst->GetOpcode()));

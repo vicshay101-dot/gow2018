@@ -146,6 +146,17 @@ void Write(VAddr presented) {
         }
     }
     std::fclose(f);
+    {   // gow3: the capture folder is not reachable on a phone, so echo the file into the log.
+        if (FILE* in = std::fopen(path.c_str(), "r")) {
+            char line[512];
+            int shown = 0;
+            while (shown < 600 && std::fgets(line, sizeof(line), in)) {
+                std::printf("Capture> %s", line);
+                ++shown;
+            }
+            std::fclose(in);
+        }
+    }
     std::printf("Frame capture: %zu passes written to %s\n", entries.size(), path.c_str());
     SetResult(std::format("Frame captured ({} passes): {}", entries.size(), path));
 }
@@ -154,7 +165,15 @@ void Write(VAddr presented) {
 
 void FrameCapture::OnFlip(VAddr presented_address) {
     last_presented.store(presented_address, std::memory_order_relaxed);
-    flips.fetch_add(1, std::memory_order_release);
+    const auto flip_number = flips.fetch_add(1, std::memory_order_release) + 1;
+    // gow3: capture one frame automatically at flip 300 and 900 (GOW3_AUTO_CAPTURE=0 disables).
+    static const bool auto_capture = [] {
+        const char* v = std::getenv("GOW3_AUTO_CAPTURE");
+        return !v || v[0] != '0';
+    }();
+    if (auto_capture && (flip_number == 300 || flip_number == 900)) {
+        requested.store(true, std::memory_order_release);
+    }
     static const char* trigger = std::getenv("GOW3_CAPTURE_TRIGGER");
     if (state.load(std::memory_order_relaxed) != Idle) {
         return;
