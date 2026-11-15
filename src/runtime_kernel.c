@@ -333,6 +333,109 @@ static ABI int32_t kernel_set_thread_atexit_report(void *report) {
     thread_atexit_report=report;
     return 0;
 }
+#include <ucontext.h>
+/* ---- Fibers ---- */
+#define FIBER_MAGIC UINT64_C(0x5245424946325247) /* "GR2FIBER" */
+#define FIBER_ERR_NULL ((int32_t)0x80590001)
+#define FIBER_ERR_INVALID ((int32_t)0x80590004)
+#define FIBER_ERR_PERMISSION ((int32_t)0x80590005)
+#define FIBER_ERR_STATE ((int32_t)0x80590006)
+typedef void (ABI *FiberEntry)(uint64_t arg_on_initialize,uint64_t arg_on_run);
+typedef struct HostFiber {
+    ucontext_t context;
+    FiberEntry entry;
+    uint64_t arg_on_initialize, arg_to_deliver;
+    uint64_t *resume_out; /* where the fiber's own Switch/ReturnToThread wants its next argOnRun */
+    int started, running;
+    char name[32];
+} HostFiber;
+/* The guest SceFiber (opaque, at least 16 bytes here) holds the magic and the host object. */
+typedef struct { uint64_t magic; HostFiber *host; } GuestFiber;
+static __thread struct {
+    ucontext_t thread_context;
+    HostFiber *current;
+    uint64_t *thread_return_out;
+} fiber_tls;
+static HostFiber *fiber_of(void *guest) {
+    GuestFiber *g=guest;
+    return g && g->magic==FIBER_MAGIC ? g->host : NULL;
+}
+static void fiber_trampoline(void) {
+    HostFiber *f=fiber_tls.current;
+    f->entry(f->arg_on_initialize,f->arg_to_deliver);
+    fprintf(stderr,"STOP: fiber %s returned from its entry function\n",f->name);
+    abort();
+}
+/* Separate from fiber_initialize: getcontext returns twice like setjmp, and nothing of the
+ * caller's must live across it. */
+static __attribute__((noinline)) void fiber_make_context(HostFiber *f,void *stack,size_t size) {
+    getcontext(&f->context);
+    f->context.uc_stack.ss_sp=stack;
+    f->context.uc_stack.ss_size=size;
+    f->context.uc_link=NULL;
+    makecontext(&f->context,fiber_trampoline,0);
+}
+static ABI int32_t fiber_initialize(void *guest,const char *name,FiberEntry entry,uint64_t arg_on_initialize,
+                                    void *context,uint64_t context_size,const void *option,uint32_t build_version) {
+    (void)option; (void)build_version;
+    if (!guest || !entry) return FIBER_ERR_NULL;
+    HostFiber *f=calloc(1,sizeof(*f));
+    if (!f) return FIBER_ERR_INVALID;
+    f->entry=entry; f->arg_on_initialize=arg_on_initialize;
+    snprintf(f->name,sizeof(f->name),"%s",name ? name : "");
+    size_t size=(size_t)context_size;
+    void *stack=context;
+    if (!stack || size<16384) { size=size<65536 ? 65536 : size; stack=malloc(size); }
+    fiber_make_context(f,stack,size);
+    ((GuestFiber *)guest)->magic=FIBER_MAGIC;
+    ((GuestFiber *)guest)->host=f;
+    return 0;
+}
+static ABI int32_t fiber_finalize(void *guest) {
+    HostFiber *f=fiber_of(guest);
+    if (!f) return FIBER_ERR_INVALID;
+    if (f->running) return FIBER_ERR_STATE;
+    ((GuestFiber *)guest)->magic=0;
+    free(f); /* the context memory belongs to the game */
+    return 0;
+}
+static void fiber_enter(HostFiber *f,uint64_t arg) {
+    if (f->started && f->resume_out) *f->resume_out=arg;
+    f->arg_to_deliver=arg;
+    f->started=1; f->running=1;
+    fiber_tls.current=f;
+}
+static ABI int32_t fiber_run(void *guest,uint64_t arg_on_run_to,uint64_t *arg_on_return) {
+    HostFiber *f=fiber_of(guest);
+    if (!f) return FIBER_ERR_INVALID;
+    if (fiber_tls.current) return FIBER_ERR_PERMISSION; /* only a thread runs a fiber */
+    if (f->running) return FIBER_ERR_STATE;
+    fiber_tls.thread_return_out=arg_on_return;
+    fiber_enter(f,arg_on_run_to);
+    swapcontext(&fiber_tls.thread_context,&f->context);
+    fiber_tls.current=NULL;
+    return 0;
+}
+static ABI int32_t fiber_switch(void *guest,uint64_t arg_on_run_to,uint64_t *arg_on_run) {
+    HostFiber *to=fiber_of(guest), *from=fiber_tls.current;
+    if (!to) return FIBER_ERR_INVALID;
+    if (!from) return FIBER_ERR_PERMISSION;
+    if (to->running) return FIBER_ERR_STATE;
+    from->resume_out=arg_on_run; from->running=0;
+    fiber_enter(to,arg_on_run_to);
+    swapcontext(&from->context,&to->context);
+    return 0;
+}
+static ABI int32_t fiber_return_to_thread(uint64_t arg_on_return,uint64_t *arg_on_run) {
+    HostFiber *from=fiber_tls.current;
+    if (!from) return FIBER_ERR_PERMISSION;
+    if (fiber_tls.thread_return_out) *fiber_tls.thread_return_out=arg_on_return;
+    from->resume_out=arg_on_run; from->running=0;
+    fiber_tls.current=NULL;
+    swapcontext(&from->context,&fiber_tls.thread_context);
+    return 0;
+}
+
 #include "kernel_stubs.inc"
 static const RuntimeExport exports[]={
 #define KSTUB_ENTRIES
@@ -369,5 +472,9 @@ static const RuntimeExport exports[]={
     {"_sceKernelSetThreadDtors",kernel_set_thread_dtors},
     {"_sceKernelSetThreadAtexitCount",kernel_set_thread_atexit_count},
     {"_sceKernelSetThreadAtexitReport",kernel_set_thread_atexit_report},
+    /* libSceFiber (POSIX host): ucontext on the game's own context memory (from inFAMOUS runtime_gr2.c) */
+    {"_sceFiberInitializeImpl",fiber_initialize}, {"sceFiberFinalize",fiber_finalize},
+    {"sceFiberRun",fiber_run}, {"sceFiberSwitch",fiber_switch},
+    {"sceFiberReturnToThread",fiber_return_to_thread},
 };
 uintptr_t runtime_kernel_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
