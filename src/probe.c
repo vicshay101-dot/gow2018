@@ -257,6 +257,58 @@ static void fault(int sig, siginfo_t *info, void *context) {
     else
         snprintf(line, sizeof(line), "Fault (signal %d) at RIP %p, address %p\n", sig, (void *)rip, info->si_addr);
     { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
+    /* Extra crash context: thread, guest/host state, last guest->host call, and the mapping that holds the PC. */
+    {
+        char tname[32]="?";
+#ifdef __ANDROID__
+        prctl(PR_GET_NAME,(unsigned long)tname,0,0,0);
+#endif
+        snprintf(line,sizeof(line),"  thread='%s' tid=%ld in_guest=%d image=%p last_guest_call_ret=0x%lx (image+0x%lx) guest_sp=0x%lx\n",
+                 tname,(long)gettid(),in_guest,(void *)image,(unsigned long)guest_cpu_return_address(0),
+                 (unsigned long)(guest_cpu_return_address(0)-(uintptr_t)image),(unsigned long)guest_cpu_stack_pointer());
+        { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+        if (in_guest) {
+            snprintf(line,sizeof(line),"  guest rip=0x%lx (image+0x%lx) rsp=0x%lx rbp=0x%lx rax=0x%lx rcx=0x%lx rdx=0x%lx rbx=0x%lx rsi=0x%lx rdi=0x%lx\n",
+                     (unsigned long)regs.rip,(unsigned long)(regs.rip-(uintptr_t)image),(unsigned long)regs.gpr[GUEST_RSP],(unsigned long)regs.gpr[GUEST_RBP],
+                     (unsigned long)regs.gpr[GUEST_RAX],(unsigned long)regs.gpr[GUEST_RCX],(unsigned long)regs.gpr[GUEST_RDX],(unsigned long)regs.gpr[GUEST_RBX],
+                     (unsigned long)regs.gpr[GUEST_RSI],(unsigned long)regs.gpr[GUEST_RDI]);
+            { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+            snprintf(line,sizeof(line),"  guest r8=0x%lx r9=0x%lx r10=0x%lx r11=0x%lx r12=0x%lx r13=0x%lx r14=0x%lx r15=0x%lx\n",
+                     (unsigned long)regs.gpr[GUEST_R8],(unsigned long)regs.gpr[GUEST_R9],(unsigned long)regs.gpr[GUEST_R10],(unsigned long)regs.gpr[GUEST_R11],
+                     (unsigned long)regs.gpr[GUEST_R12],(unsigned long)regs.gpr[GUEST_R13],(unsigned long)regs.gpr[GUEST_R14],(unsigned long)regs.gpr[GUEST_R15]);
+            { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+        }
+#if defined(__aarch64__)
+        {
+            const ucontext_t *uc=(const ucontext_t *)context;
+            snprintf(line,sizeof(line),"  host pc=0x%lx sp=0x%lx fault_addr=0x%lx\n",(unsigned long)uc->uc_mcontext.pc,(unsigned long)uc->uc_mcontext.sp,(unsigned long)uc->uc_mcontext.fault_address);
+            { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+            for (int i=0;i<31;i+=4) {
+                snprintf(line,sizeof(line),"  x%d=0x%lx x%d=0x%lx x%d=0x%lx x%d=0x%lx\n",i,(unsigned long)uc->uc_mcontext.regs[i],
+                         i+1,(unsigned long)uc->uc_mcontext.regs[i+1],i+2,(unsigned long)uc->uc_mcontext.regs[i+2],
+                         i+3<31?i+3:30,(unsigned long)uc->uc_mcontext.regs[i+3<31?i+3:30]);
+                { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+            }
+        }
+#endif
+        int mfd=open("/proc/self/maps",O_RDONLY);
+        if (mfd>=0) {
+            static char maps[65536]; ssize_t n=read(mfd,maps,sizeof(maps)-1); close(mfd);
+            if (n>0) {
+                maps[n]=0; char *ln=maps;
+                while (ln && *ln) {
+                    char *nl=strchr(ln,'\n'); if (nl) *nl=0;
+                    unsigned long lo=0,hi=0;
+                    if (sscanf(ln,"%lx-%lx",&lo,&hi)==2 && rip>=lo && rip<hi) {
+                        snprintf(line,sizeof(line),"  pc mapping: %s (pc-start=0x%lx)\n",ln,(unsigned long)(rip-lo));
+                        { ssize_t w_=write(2,line,strlen(line)); (void)w_; }
+                        break;
+                    }
+                    ln=nl?nl+1:NULL;
+                }
+            }
+        }
+    }
     if (gpu_enabled) gow3gpu_dump_guest_writes(context);
     /* Host call chain (frames with unwind info; guest frames end it). */
     void *frames[32];
