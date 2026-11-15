@@ -1,0 +1,34 @@
+
+name: Apply update zip
+
+on:
+  push:
+    branches: [android]
+    paths: [gow2018-update.zip]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: android
+      - name: Unzip over the tree and commit
+        run: |
+          test -f gow2018-update.zip
+          unzip -o gow2018-update.zip
+          rm gow2018-update.zip
+          git config user.name "update-bot"
+          git config user.email "update-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "Apply update zip"
+          git push origin HEAD:android
+      - name: Start the APK build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bionic-apk.yml --ref android
+        
