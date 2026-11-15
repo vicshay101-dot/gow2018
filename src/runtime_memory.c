@@ -403,13 +403,24 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         /* A fixed guest address the host cannot back (typically above the kernel's VA limit,
          * e.g. 39-bit VA on Android) is relocated to a free spot; the caller gets the real
          * address through *inout, as with a non-fixed map. */
-        if (!(flags & MAP_FIXED_FLAG) || kind==KIND_RESERVED) return NO_MEMORY;
-        uintptr_t moved=find_free(USER_MIN,size,alignment);
-        if (!moved || host_map(moved,size,host_prot(prot),0,phys)) {
-            fprintf(stderr,"Runtime: relocation of fixed map %p FAILED (found=%p errno=%d)\n",(void *)address,(void *)moved,errno);
+        /* Small reservations (thread/fiber stacks and arenas the game asks for above 512 GiB) are
+         * relocated like fixed maps; the new base is returned through *inout, so the game derives
+         * its later addresses from it. Huge ones stay failed. */
+        if (kind==KIND_RESERVED) {
+            if (size>UINT64_C(0x40000000)) return NO_MEMORY;
+        } else if (!(flags & MAP_FIXED_FLAG)) return NO_MEMORY;
+        uintptr_t moved=0, from=USER_MIN;
+        for (int attempt=0; attempt<64; ++attempt) {
+            moved=find_free(from,size,alignment);
+            if (!moved) break;
+            if (!host_map(moved,size,host_prot(prot),kind==KIND_RESERVED,phys)) break;
+            from=moved+size; moved=0; /* host range busy (library, heap, driver): try the next gap */
+        }
+        if (!moved) {
+            fprintf(stderr,"Runtime: relocation of %s %p FAILED (errno=%d)\n",kind==KIND_RESERVED?"reservation":"fixed map",(void *)address,errno);
             return NO_MEMORY;
         }
-        fprintf(stderr,"Runtime: fixed map %p relocated to %p (size=%" PRIu64 ")\n",(void *)address,(void *)moved,size);
+        fprintf(stderr,"Runtime: %s %p relocated to %p (size=%" PRIu64 ")\n",kind==KIND_RESERVED?"reservation":"fixed map",(void *)address,(void *)moved,size);
         address=moved;
     }
     if (overlaps(address,address+size,1)) {
