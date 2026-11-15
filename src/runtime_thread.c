@@ -423,6 +423,7 @@ typedef struct HostFiber {
     unsigned char *stack; size_t stack_size; int owns_stack;
     int started, running;
     char name[32];
+    void *guest_handle;          /* the guest's SceFiber for sceFiberGetSelf */
 } HostFiber;
 typedef struct { uint64_t magic; HostFiber *host; } GuestFiber;
 static _Thread_local HostFiber *fiber_current;
@@ -475,7 +476,7 @@ static ABI int32_t fiber_initialize(void *guest,const char *name,FiberEntry entr
     HostFiber *f=calloc(1,sizeof(*f));
     if (!f) return FIBER_ERR_INVALID;
     sem_init(&f->wake,0,0);
-    f->entry=entry; f->arg_on_initialize=arg_on_initialize;
+    f->entry=entry; f->arg_on_initialize=arg_on_initialize; f->guest_handle=guest;
     snprintf(f->name,sizeof(f->name),"%s",name ? name : "");
     size_t size=(size_t)context_size;
     if (context && size>=16384) { f->stack=context; f->stack_size=size; }
@@ -536,6 +537,12 @@ static ABI int32_t fiber_return_to_thread(uint64_t arg_on_return,uint64_t *arg_o
 }
 #endif /* !_WIN32 */
 
+static ABI int32_t fiber_get_self(void **out) {
+    if (!out) return FIBER_ERR_NULL;
+    if (!fiber_current) return FIBER_ERR_PERMISSION; /* not running on a fiber */
+    *out=fiber_current->guest_handle;
+    return 0;
+}
 uintptr_t runtime_thread_resolve(const char *name) {
     static const struct { const char *nid; void *fn; } table[]={
         {"aI+OeCz8xrQ#libkernel",thread_self}, {"EotR8a3ASf4#libkernel",thread_self},
@@ -559,7 +566,7 @@ uintptr_t runtime_thread_resolve(const char *name) {
         {"FJrT5LuUBAU#libkernel",thread_exit},
         {"hVYD7Ou2pCQ#libSceFiber",fiber_initialize}, {"JeNX5F-NzQU#libSceFiber",fiber_finalize},
         {"a0LLrZWac0M#libSceFiber",fiber_run}, {"PFT2S-tJ7Uk#libSceFiber",fiber_switch},
-        {"B0ZX2hx9DMw#libSceFiber",fiber_return_to_thread},
+        {"B0ZX2hx9DMw#libSceFiber",fiber_return_to_thread}, {"p+zLIOg27zU#libSceFiber",fiber_get_self},
     };
     for (size_t i=0;i<sizeof(table)/sizeof(*table);++i)
         if (!strcmp(name,table[i].nid)) return (uintptr_t)table[i].fn;
