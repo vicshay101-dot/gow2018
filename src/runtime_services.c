@@ -7,6 +7,7 @@
 #define _GNU_SOURCE
 #include "runtime.h"
 #include "gpu/gow3gpu.h"
+#include "guest_cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -606,6 +607,38 @@ static ABI int32_t discmap_8a82(const char *path,int64_t offset,int64_t size,int
     (void)path; (void)offset; (void)size; (void)flags; (void)r1; (void)r2; return DISC_MAP_NO_BITMAP;
 }
 
+/* sce::Job::JobManager (libSceJobManager): the game calls it as C++ methods (this in rdi). Without a real
+ * job system these are logged stubs that report success, so the game can go on and the log shows
+ * what it asks for. getSequenceFactoryInterface returns an object whose virtual methods all return 0. */
+static ABI uint64_t job_iface_stub(void *self,uint64_t a,uint64_t b,uint64_t c) {
+    fprintf(stderr,"Runtime: JobManager sequence-factory method called (this=%p a=0x%lx b=0x%lx c=0x%lx)\n",self,(unsigned long)a,(unsigned long)b,(unsigned long)c);
+    return 0;
+}
+static ABI void *job_ctor(void *self) { fprintf(stderr,"Runtime: JobManager ctor this=%p\n",self); return self; }
+static ABI void job_dtor(void *self) { fprintf(stderr,"Runtime: JobManager dtor this=%p\n",self); }
+static ABI int32_t job_init(void *self,void *mem,uint64_t mem_size,uint32_t a,uint32_t b,uint32_t c,uint64_t d,const void *cfg) {
+    fprintf(stderr,"Runtime: JobManager initialize this=%p mem=%p size=0x%lx args=%u,%u,%u,0x%lx cfg=%p\n",self,mem,(unsigned long)mem_size,a,b,c,(unsigned long)d,cfg);
+    return 0;
+}
+static ABI int32_t job_shutdown(void *self) { fprintf(stderr,"Runtime: JobManager shutdown this=%p\n",self); return 0; }
+static ABI int32_t job_set_threads(void *self,uint32_t n) { fprintf(stderr,"Runtime: JobManager setPersistentThreadCount this=%p n=%u\n",self,n); return 0; }
+static ABI uint64_t job_required_size(const void *params) {
+    fprintf(stderr,"Runtime: JobManager calculateRequiredMemorySize params=%p\n",params);
+    return 0x100000; /* generous: the game hands over a buffer of this size */
+}
+static void *job_iface_object;
+static ABI void *job_sequence_factory(void *self,uint32_t priority) {
+    fprintf(stderr,"Runtime: JobManager getSequenceFactoryInterface this=%p priority=%u\n",self,priority);
+    if (!job_iface_object) {
+        uintptr_t *obj=calloc(1,4096), *vt=calloc(64,sizeof(uintptr_t));
+        if (!obj || !vt) return NULL;
+        for (int i=0;i<64;++i) vt[i]=guest_cpu_host_function((void *)job_iface_stub);
+        obj[0]=(uintptr_t)vt;
+        job_iface_object=obj;
+    }
+    return job_iface_object;
+}
+
 static ABI int32_t discmap_7c98(const char *path,int64_t offset,int64_t size,int32_t *a,int32_t *b) {
     (void)path; (void)offset; (void)size; (void)a; (void)b; return DISC_MAP_NO_BITMAP;
 }
@@ -745,6 +778,12 @@ static const RuntimeExport exports[]={
     {"sceMouseInit",ok_void}, {"sceMouseOpen",mouse_open}, {"sceMouseRead",mouse_read}, {"sceMouseClose",mouse_close},
     {"sceAudioInOpen",audio_in_open},
     {"sceDiscMapIsRequestOnHDD",discmap_on_hdd}, {"sceDiscMap_8A828CAEE7EDD5E9",discmap_8a82}, {"sceDiscMap_7C980FFB0AA27E7A",discmap_7c98},
+    {"_ZN3sce3Job10JobManagerC1Ev",job_ctor}, {"_ZN3sce3Job10JobManagerD1Ev",job_dtor},
+    {"_ZN3sce3Job10JobManager10initializeEPvmjjjmPKNS1_12ConfigParamsE",job_init},
+    {"_ZN3sce3Job10JobManager8shutdownEv",job_shutdown},
+    {"_ZN3sce3Job10JobManager24setPersistentThreadCountEj",job_set_threads},
+    {"_ZN3sce3Job10JobManager27calculateRequiredMemorySizeEPKNS1_21MemorySizeQueryParamsE",job_required_size},
+    {"_ZN3sce3Job10JobManager27getSequenceFactoryInterfaceENS1_8PriorityE",job_sequence_factory},
     {"sceVoiceInit",ok_void}, {"sceVoiceEnd",ok_void},
 };
 uintptr_t runtime_services_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
