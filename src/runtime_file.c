@@ -324,50 +324,58 @@ static void touch_for_write(void *buffer,uint64_t size) {
         *b=*b;
     }
 }
+/* Full transfer with explicit failure reporting.
+ * offset<0: read() on the fd (advances its position); otherwise pread() at offset.
+ * - Keeps going on EINTR and on transient host errors (EAGAIN, EIO, EBUSY, ETIMEDOUT, ENOMEM),
+ *   retrying with a short back-off, up to 200 times in a row without progress.
+ * - Returns the byte count only for a real end of file (fstat size <= position). Every other stop
+ *   is returned as a negative errno. Before, a host error after a partial read silently returned a
+ *   short count that the game could not complete, and it waited forever. */
+static int transient_errno(int e) {
+    return e==EAGAIN || e==EWOULDBLOCK || e==EIO || e==EBUSY || e==ETIMEDOUT || e==ENOMEM;
+}
+static int64_t transfer_full(int fd,int h,char *buffer,uint64_t size,int64_t offset,const char *what) {
+    uint64_t total=0;
+    int stalls=0;
+    while (total<size) {
+        int64_t pos = offset<0 ? (int64_t)lseek(h,0,SEEK_CUR) : offset+(int64_t)total;
+        ssize_t n = offset<0 ? host_read(h,buffer+total,size-total)
+                             : pread(h,buffer+total,size-total,(off_t)pos);
+        if (n>0) { total+=(uint64_t)n; stalls=0; continue; }
+        int e = n<0 ? errno : 0;
+        if (n<0 && e==EINTR) continue;
+        if (n==0) {
+            struct stat st;
+            if (fstat(h,&st)==0 && (int64_t)st.st_size<=pos) break; /* real EOF */
+            e=EIO; /* not at end of file yet: a host short return, treat as transient */
+        }
+        if (transient_errno(e) && stalls<200) {
+            ++stalls;
+            usleep(stalls<20 ? 1000 : 10000);
+            continue;
+        }
+        static int shown;
+        if (shown<40) { ++shown; fprintf(stderr,"Runtime: %s failed fd=%d pos=%lld got=%llu of %llu errno=%d (%s)\n",what,fd,(long long)pos,(unsigned long long)total,(unsigned long long)size,e,strerror(e)); }
+        return total ? -(int64_t)EIO : -(int64_t)(e ? e : EIO);
+    }
+    if (total<size) { static int shown_eof; if (shown_eof<20) { ++shown_eof; fprintf(stderr,"Runtime: %s EOF fd=%d got=%llu of %llu\n",what,fd,(unsigned long long)total,(unsigned long long)size); } }
+    return (int64_t)total;
+}
 static int64_t do_read(int fd,void *buffer,uint64_t size) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
     touch_for_write(buffer,size);
-    /* The game checks that a read returned exactly the requested size (a short count trips its
-     * assert and the asset load fails). Regular files only return less at EOF, but FUSE-backed
-     * storage and big requests can return partial counts, so keep reading until full, EOF or error. */
-    uint64_t total=0;
-    while (total<size) {
-        ssize_t n=host_read(h,(char *)buffer+total,size-total);
-        if (n<0) {
-            if (errno==EINTR) continue;
-            if (total) break;
-            if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,errno);
-            return -errno;
-        }
-        if (n==0) break;
-        total+=(uint64_t)n;
-    }
-    if (total<size) { static int shown; if (shown<20) { ++shown; fprintf(stderr,"Runtime: short read fd=%d requested=%llu got=%llu (EOF)\n",fd,(unsigned long long)size,(unsigned long long)total); } }
-    __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,total,__ATOMIC_RELAXED);
-    record_file_io(fd,size,total,-1);
-    return (int64_t)total;
+    int64_t r=transfer_full(fd,h,(char *)buffer,size,-1,"read");
+    if (r>=0) { __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)r,__ATOMIC_RELAXED); }
+    return r;
 }
 static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     int h=host_fd(fd);
     if (h<0) return -EBADF;
     touch_for_write(buffer,size);
-    uint64_t total=0; /* see do_read: loop until the whole request is satisfied */
-    while (total<size) {
-        ssize_t n=pread(h,(char *)buffer+total,size-total,offset+(int64_t)total);
-        if (n<0) {
-            if (errno==EINTR) continue;
-            if (total) break;
-            if (audio_trace()) printf("Audio trace: pread(fd %d, %llu @%lld) failed, errno %d\n",fd,(unsigned long long)size,(long long)offset,errno);
-            return -errno;
-        }
-        if (n==0) break;
-        total+=(uint64_t)n;
-    }
-    if (total<size) { static int shown; if (shown<20) { ++shown; fprintf(stderr,"Runtime: short pread fd=%d requested=%llu @%lld got=%llu (EOF)\n",fd,(unsigned long long)size,(long long)offset,(unsigned long long)total); } }
-    __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,total,__ATOMIC_RELAXED);
-    record_file_io(fd,size,total,offset);
-    return (int64_t)total;
+    int64_t r=transfer_full(fd,h,(char *)buffer,size,offset,"pread");
+    if (r>=0) { __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)r,__ATOMIC_RELAXED); }
+    return r;
 }
 static int64_t do_write(int fd,const void *buffer,uint64_t size) {
     int h=host_fd(fd);
