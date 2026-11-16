@@ -31,6 +31,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
+#include <algorithm>
 #include <utility>
 #include <vector>
 #include <sys/mman.h>
@@ -81,6 +82,8 @@ unsigned char* stubs;
 uintptr_t callback_ret;
 void* stub_functions[StubBytes / StubSize];
 std::atomic<size_t> stub_count;
+std::atomic<uint64_t> stub_calls[StubBytes / StubSize];
+const char* stub_names[StubBytes / StubSize];
 std::mutex stub_lock;
 std::unordered_map<void*, uintptr_t> stub_of;
 
@@ -200,6 +203,7 @@ public:
             if (!fn) {
                 Fatal("call of an unregistered host stub", rip);
             }
+            stub_calls[offset / StubSize].fetch_add(1, std::memory_order_relaxed);
             CallHost(s, fn);
             s.rip = rip + 2;
             return;
@@ -560,3 +564,30 @@ uint64_t guest_cpu_tsc_frequency(void) {
     return frequency << tsc_shift;
 }
 } // extern "C"
+
+/* Per-API call counters for the loader heartbeat. */
+void guest_cpu_name_stub(uintptr_t stub, const char* name) {
+    const size_t index = (stub - reinterpret_cast<uintptr_t>(stubs)) / StubSize;
+    if (stubs && index < StubBytes / StubSize) {
+        stub_names[index] = name;
+    }
+}
+size_t guest_cpu_stub_top(const char** names, uint64_t* deltas, size_t max) {
+    static uint64_t last[StubBytes / StubSize];
+    const size_t n = stub_count.load(std::memory_order_acquire);
+    std::vector<std::pair<uint64_t, size_t>> changed;
+    for (size_t i = 1; i < n; ++i) {
+        const uint64_t now = stub_calls[i].load(std::memory_order_relaxed);
+        if (now != last[i]) {
+            changed.emplace_back(now - last[i], i);
+            last[i] = now;
+        }
+    }
+    std::sort(changed.begin(), changed.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    const size_t count = std::min(changed.size(), max);
+    for (size_t k = 0; k < count; ++k) {
+        deltas[k] = changed[k].first;
+        names[k] = stub_names[changed[k].second] ? stub_names[changed[k].second] : "?";
+    }
+    return count;
+}

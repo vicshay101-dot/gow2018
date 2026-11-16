@@ -33,6 +33,9 @@ void guest_cpu_code(uintptr_t base, size_t size);
 /* The guest-callable address of host function `fn` (SysV ABI on the guest side, at most 14
  * integer arguments and 8 vector arguments; no structures by value, no va_list). */
 uintptr_t guest_cpu_host_function(void *fn);
+/* Call counters (diagnostics): name a stub, and get the most called APIs since the last call. */
+void guest_cpu_name_stub(uintptr_t stub, const char *name);
+size_t guest_cpu_stub_top(const char **names, uint64_t *deltas, size_t max);
 /* Calls guest function `fn` with `count` integer arguments; returns RAX. On this thread's current
  * guest stack when the host was called by guest code, else on the stack set by
  * guest_cpu_thread_stack (or one allocated for the thread). */

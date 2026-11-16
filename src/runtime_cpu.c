@@ -17,6 +17,8 @@
 void guest_cpu_init(void *(*map)(size_t size, int prot)) { (void)map; }
 void guest_cpu_code(uintptr_t base, size_t size) { (void)base; (void)size; }
 uintptr_t guest_cpu_host_function(void *fn) { return (uintptr_t)fn; }
+void guest_cpu_name_stub(uintptr_t stub, const char *name) { (void)stub; (void)name; }
+size_t guest_cpu_stub_top(const char **names, uint64_t *deltas, size_t max) { (void)names; (void)deltas; (void)max; return 0; }
 uint64_t guest_cpu_call(uintptr_t fn, unsigned count, const uint64_t *args) {
     typedef uint64_t (ABI *Fn)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
     uint64_t a[6]={0};
