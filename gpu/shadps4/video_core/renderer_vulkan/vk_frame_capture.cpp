@@ -4,6 +4,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <format>
@@ -224,6 +225,8 @@ bool FrameCapture::IsDisplayBuffer(VAddr address) {
 void FrameCapture::AddDisplayBuffer(VAddr address) {
     std::scoped_lock lk{display_mutex};
     if (std::ranges::find(display_buffers, address) == display_buffers.end()) {
+        if (const char* trace=std::getenv("GOW3_FRAME_TRACE"); trace && trace[0]=='1')
+            std::fprintf(stderr,"GOW3_FRAME_TRACE_V1: registered display buffer %llx\n",(unsigned long long)address);
         display_buffers.push_back(address);
         const u32 count = display_count.load(std::memory_order_relaxed);
         if (count < display_list.size()) {
@@ -243,6 +246,18 @@ void FrameCapture::BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_
             targets.push_back(colors[i] ? ToTarget(*colors[i]) : Target{});
             display |= colors[i] && std::ranges::find(display_buffers, colors[i]->guest_address) !=
                                         display_buffers.end();
+        }
+    }
+    // Optional render-target trace. It does not change pass selection or rendering.
+    if (const char* trace=std::getenv("GOW3_FRAME_TRACE"); trace && trace[0]=='1') {
+        static u32 traced=0;
+        if (display || traced<48) {
+            ++traced;
+            std::fprintf(stderr,"GOW3_FRAME_TRACE_V1: BeginPass colors=%u display=%d",num_colors,display?1:0);
+            for (const auto& target:targets)
+                std::fprintf(stderr," [%s]",Describe(target).c_str());
+            if (depth) std::fprintf(stderr," depth=[%s]",Describe(ToTarget(*depth)).c_str());
+            std::fprintf(stderr,"\n");
         }
     }
     // Frame boundaries in the command stream: the pass that writes a display buffer as its only

@@ -53,6 +53,16 @@ static File files[MAX_FILES];
 static Mount mounts[MAX_MOUNTS];
 static size_t mount_count, opens, reads, writes, missing;
 static uint64_t bytes_read;
+/* GOW3_IO_HISTORY_V1: bounded history for async asset-stream diagnostics. */
+typedef struct {
+    int fd;
+    uint64_t requested, actual;
+    int64_t offset;
+    unsigned long long thread;
+    char path[512];
+} RuntimeFileEvent;
+static RuntimeFileEvent recent_opens[8], recent_io[8];
+static uint64_t open_event_count, io_event_count;
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 
 int runtime_file_mount(const char *guest,const char *host) {
@@ -245,6 +255,13 @@ static int64_t do_open(const char *guest,int flags,int mode) {
     snprintf(files[fd].path,sizeof(files[fd].path),"%s",guest);
     ++opens;
     unsigned long opened_now=opens;
+    {
+        RuntimeFileEvent *ev=&recent_opens[open_event_count++ % 8];
+        *ev=(RuntimeFileEvent){.fd=fd,.requested=(uint64_t)(s.st_size>0?s.st_size:0),
+            .actual=(uint64_t)(s.st_size>0?s.st_size:0),.offset=0,
+            .thread=(unsigned long long)(uintptr_t)pthread_self()};
+        snprintf(ev->path,sizeof(ev->path),"%s",guest);
+    }
     pthread_mutex_unlock(&lock);
     if (opened_now<=150) printf("Runtime: open(%s) -> fd %d, %lld bytes\n",guest,fd,(long long)s.st_size);
     if (audio_trace() && strstr(guest,"sound/")) printf("Audio trace: open(%s) -> fd %d, %lld bytes\n",guest,fd,(long long)s.st_size);
@@ -276,6 +293,17 @@ static int host_fd(int fd) {
     if (fd>=0 && fd<3) return fd;
     File *f=get(fd);
     return f ? f->host : -1;
+}
+static void record_file_io(int fd,uint64_t requested,uint64_t actual,int64_t offset) {
+    pthread_mutex_lock(&lock);
+    RuntimeFileEvent *ev=&recent_io[io_event_count++ % 8];
+    *ev=(RuntimeFileEvent){.fd=fd,.requested=requested,.actual=actual,.offset=offset,
+        .thread=(unsigned long long)(uintptr_t)pthread_self()};
+    if (fd>=0 && fd<3) snprintf(ev->path,sizeof(ev->path),"stdio:%d",fd);
+    else if (fd>=0 && fd<MAX_FILES && files[fd].used)
+        snprintf(ev->path,sizeof(ev->path),"%s",files[fd].path);
+    else snprintf(ev->path,sizeof(ev->path),"<closed fd>");
+    pthread_mutex_unlock(&lock);
 }
 #ifdef _WIN32
 /* The CRT reads and writes at most INT_MAX bytes per call. */
@@ -317,6 +345,7 @@ static int64_t do_read(int fd,void *buffer,uint64_t size) {
     }
     if (total<size) { static int shown; if (shown<20) { ++shown; fprintf(stderr,"Runtime: short read fd=%d requested=%llu got=%llu (EOF)\n",fd,(unsigned long long)size,(unsigned long long)total); } }
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,total,__ATOMIC_RELAXED);
+    record_file_io(fd,size,total,-1);
     return (int64_t)total;
 }
 static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
@@ -337,6 +366,7 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     }
     if (total<size) { static int shown; if (shown<20) { ++shown; fprintf(stderr,"Runtime: short pread fd=%d requested=%llu @%lld got=%llu (EOF)\n",fd,(unsigned long long)size,(long long)offset,(unsigned long long)total); } }
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,total,__ATOMIC_RELAXED);
+    record_file_io(fd,size,total,offset);
     return (int64_t)total;
 }
 static int64_t do_write(int fd,const void *buffer,uint64_t size) {
@@ -549,4 +579,32 @@ void runtime_file_report(void) {
 /* Loading progress for the heartbeat. */
 void runtime_file_stats(unsigned long long *o,unsigned long long *r,unsigned long long *b,unsigned long long *m) {
     *o=opens; *r=reads; *b=bytes_read; *m=missing;
+}
+/* Called by the 5-second heartbeat. Prints only when new I/O was recorded. */
+void runtime_file_progress(void) {
+    static uint64_t shown_opens=UINT64_MAX, shown_io=UINT64_MAX;
+    RuntimeFileEvent op[8], io[8];
+    uint64_t no,ni;
+    pthread_mutex_lock(&lock);
+    no=open_event_count; ni=io_event_count;
+    if (no==shown_opens && ni==shown_io) { pthread_mutex_unlock(&lock); return; }
+    memcpy(op,recent_opens,sizeof(op));
+    memcpy(io,recent_io,sizeof(io));
+    pthread_mutex_unlock(&lock);
+    shown_opens=no; shown_io=ni;
+    fprintf(stderr,"File history: recent opens (oldest first):\n");
+    uint64_t first=no>8?no-8:0;
+    for (uint64_t n=first;n<no;++n) {
+        const RuntimeFileEvent *e=&op[n%8];
+        fprintf(stderr,"  OPEN fd=%d size=%llu tid=%llu %s\n",e->fd,
+            (unsigned long long)e->requested,e->thread,e->path);
+    }
+    fprintf(stderr,"File history: recent reads (oldest first):\n");
+    first=ni>8?ni-8:0;
+    for (uint64_t n=first;n<ni;++n) {
+        const RuntimeFileEvent *e=&io[n%8];
+        fprintf(stderr,"  %s fd=%d got=%llu/%llu offset=%lld tid=%llu %s\n",
+            e->offset<0?"READ":"PREAD",e->fd,(unsigned long long)e->actual,
+            (unsigned long long)e->requested,(long long)e->offset,e->thread,e->path);
+    }
 }
