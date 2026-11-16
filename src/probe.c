@@ -712,6 +712,7 @@ void runtime_restart(void) {
 #endif
 }
 
+void runtime_file_stats(unsigned long long *o,unsigned long long *r,unsigned long long *b,unsigned long long *m);
 #ifndef _WIN32
 /* Heartbeat: one line every 5 s with RSS, available RAM and thread count. If the log just stops,
  * the last line shows whether the process was starved of memory (Android kills it silently) or hung. */
@@ -727,6 +728,7 @@ static void *heartbeat_thread(void *arg) {
         unsigned threads=0; f=fopen("/proc/self/status","r");
         if (f) { char l[128]; while (fgets(l,sizeof(l),f)) if (sscanf(l,"Threads: %u",&threads)==1) break; fclose(f); }
         fprintf(stderr,"Heartbeat #%u: rss=%lu MiB, MemAvailable=%lu MiB, SwapFree=%lu MiB, threads=%u | gpu flips submitted=%llu presented=%llu draws=%llu dispatches=%llu\n",n,rss_pages*(unsigned long)sysconf(_SC_PAGESIZE)/1048576UL,avail_kb/1024,swap_kb/1024,threads,gow3gpu_stat(0),gow3gpu_stat(1),gow3gpu_stat(2),gow3gpu_stat(3));
+        { unsigned long long fo,fr,fb,fm; runtime_file_stats(&fo,&fr,&fb,&fm); fprintf(stderr,"Heartbeat files: opens=%llu reads=%llu read=%llu MiB not_found=%llu\n",fo,fr,fb/1048576ULL,fm); }
         fflush(stderr);
     }
     return NULL;

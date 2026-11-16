@@ -244,7 +244,9 @@ static int64_t do_open(const char *guest,int flags,int mode) {
     files[fd]=(File){.used=1,.host=host,.dir=dir};
     snprintf(files[fd].path,sizeof(files[fd].path),"%s",guest);
     ++opens;
+    unsigned long opened_now=opens;
     pthread_mutex_unlock(&lock);
+    if (opened_now<=150) printf("Runtime: open(%s) -> fd %d, %lld bytes\n",guest,fd,(long long)s.st_size);
     if (audio_trace() && strstr(guest,"sound/")) printf("Audio trace: open(%s) -> fd %d, %lld bytes\n",guest,fd,(long long)s.st_size);
     const char *mod_trace=getenv("GOW3_MOD_TRACE"), *mod_root=getenv("GOW3_MODS_DIR");
     if (mod_trace && mod_trace[0]=='1' && mod_root) {
@@ -543,3 +545,8 @@ void runtime_file_report(void) {
            opens,reads,(unsigned long long)bytes_read,writes,missing);
 }
 
+
+/* Loading progress for the heartbeat. */
+void runtime_file_stats(unsigned long long *o,unsigned long long *r,unsigned long long *b,unsigned long long *m) {
+    *o=opens; *r=reads; *b=bytes_read; *m=missing;
+}
