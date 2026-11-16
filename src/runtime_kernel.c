@@ -363,6 +363,49 @@ static ABI int32_t kernel_set_thread_atexit_report(void *report) {
     thread_atexit_report=report;
     return 0;
 }
+/* ---- Wait watch (diagnostic): guest-visible blocking waits, printed by the heartbeat when
+ * they last more than 2 s. Only logs; it never changes what a wait returns. ---- */
+#define WAITW_SLOTS 64
+typedef struct { int used; unsigned long long tid; const char *kind; uint64_t id; uint64_t since_ms; } WaitSlot;
+static pthread_mutex_t waitw_lock = PTHREAD_MUTEX_INITIALIZER;
+static WaitSlot waitw_slots[WAITW_SLOTS];
+static uint64_t waitw_now_ms(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
+    return (uint64_t)ts.tv_sec*1000ULL+(uint64_t)(ts.tv_nsec/1000000L);
+}
+static int waitw_begin(const char *kind, uint64_t id) {
+    int slot=-1;
+    pthread_mutex_lock(&waitw_lock);
+    for (int i=0;i<WAITW_SLOTS;++i) if (!waitw_slots[i].used) { slot=i; break; }
+    if (slot>=0) {
+        waitw_slots[slot].used=1;
+        waitw_slots[slot].tid=(unsigned long long)(uintptr_t)pthread_self();
+        waitw_slots[slot].kind=kind;
+        waitw_slots[slot].id=id;
+        waitw_slots[slot].since_ms=waitw_now_ms();
+    }
+    pthread_mutex_unlock(&waitw_lock);
+    return slot;
+}
+static void waitw_end(int slot) {
+    if (slot<0) return;
+    pthread_mutex_lock(&waitw_lock);
+    waitw_slots[slot].used=0;
+    pthread_mutex_unlock(&waitw_lock);
+}
+void runtime_wait_dump(void) {
+    uint64_t now=waitw_now_ms();
+    pthread_mutex_lock(&waitw_lock);
+    for (int i=0;i<WAITW_SLOTS;++i) {
+        WaitSlot w=waitw_slots[i];
+        if (!w.used) continue;
+        uint64_t age=now-w.since_ms;
+        if (age<2000) continue;
+        fprintf(stderr,"Waitwatch: host thread 0x%llx blocked %llu ms in %s id=0x%llx\n",
+                w.tid,(unsigned long long)age,w.kind,(unsigned long long)w.id);
+    }
+    pthread_mutex_unlock(&waitw_lock);
+}
 #include "kernel_stubs.inc"
 static const RuntimeExport exports[]={
 #define KSTUB_ENTRIES
