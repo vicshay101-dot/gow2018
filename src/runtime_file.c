@@ -334,20 +334,37 @@ static void touch_for_write(void *buffer,uint64_t size) {
 static int transient_errno(int e) {
     return e==EAGAIN || e==EWOULDBLOCK || e==EIO || e==EBUSY || e==ETIMEDOUT || e==ENOMEM;
 }
+static ssize_t raw_io(int h,int64_t offset,int64_t pos,void *dst,uint64_t len) {
+    return offset<0 ? host_read(h,dst,len) : pread(h,dst,len,(off_t)pos);
+}
 static int64_t transfer_full(int fd,int h,char *buffer,uint64_t size,int64_t offset,const char *what) {
     uint64_t total=0;
     int stalls=0;
+    char *bounce=NULL;
     while (total<size) {
         int64_t pos = offset<0 ? (int64_t)lseek(h,0,SEEK_CUR) : offset+(int64_t)total;
-        ssize_t n = offset<0 ? host_read(h,buffer+total,size-total)
-                             : pread(h,buffer+total,size-total,(off_t)pos);
+        ssize_t n;
+        if (!bounce) n = raw_io(h,offset,pos,buffer+total,size-total);
+        else {
+            uint64_t chunk = size-total < (1u<<20) ? size-total : (1u<<20);
+            n = raw_io(h,offset,pos,bounce,chunk);
+            if (n>0) memcpy(buffer+total,bounce,(size_t)n); /* user-mode copy: honours guest page protection */
+        }
         if (n>0) { total+=(uint64_t)n; stalls=0; continue; }
         int e = n<0 ? errno : 0;
         if (n<0 && e==EINTR) continue;
+        if (n<0 && e==EFAULT && !bounce) {
+            /* The kernel could not write into the guest buffer. Fall back to a host bounce buffer. */
+            bounce=malloc(1u<<20);
+            static int shown_bounce;
+            if (shown_bounce<40) { ++shown_bounce; fprintf(stderr,"Runtime: %s EFAULT at buffer=%p len=%llu pos=%lld -> bounce copy\n",what,(void *)buffer,(unsigned long long)size,(long long)pos); }
+            if (!bounce) return -ENOMEM;
+            continue;
+        }
         if (n==0) {
             struct stat st;
             if (fstat(h,&st)==0 && (int64_t)st.st_size<=pos) break; /* real EOF */
-            e=EIO; /* not at end of file yet: a host short return, treat as transient */
+            e=EIO;
         }
         if (transient_errno(e) && stalls<200) {
             ++stalls;
@@ -356,8 +373,10 @@ static int64_t transfer_full(int fd,int h,char *buffer,uint64_t size,int64_t off
         }
         static int shown;
         if (shown<40) { ++shown; fprintf(stderr,"Runtime: %s failed fd=%d pos=%lld got=%llu of %llu errno=%d (%s)\n",what,fd,(long long)pos,(unsigned long long)total,(unsigned long long)size,e,strerror(e)); }
+        free(bounce);
         return total ? -(int64_t)EIO : -(int64_t)(e ? e : EIO);
     }
+    free(bounce);
     if (total<size) { static int shown_eof; if (shown_eof<20) { ++shown_eof; fprintf(stderr,"Runtime: %s EOF fd=%d got=%llu of %llu\n",what,fd,(unsigned long long)total,(unsigned long long)size); } }
     return (int64_t)total;
 }
