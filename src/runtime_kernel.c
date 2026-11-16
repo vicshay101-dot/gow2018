@@ -102,8 +102,21 @@ static int sleep_ns(uint64_t ns) {
 #endif
     return 0;
 }
-static ABI int32_t kernel_usleep(uint32_t usec) { sleep_ns((uint64_t)usec*1000); return 0; }
-static ABI int32_t posix_usleep(uint32_t usec) { sleep_ns((uint64_t)usec*1000); return 0; }
+/* Spin diagnostic: a guest thread that calls usleep many times in a row is polling for something.
+ * Every 2000 calls, print the guest return address (the function doing the polling) for that thread.
+ * Subtract the "Image base" line from the printed address to get the image offset. */
+static __thread unsigned spin_calls;
+static void note_usleep_spin(void) {
+    if (++spin_calls % 2000 != 0) return;
+    static int shown;
+    if (shown >= 80) return;
+    ++shown;
+    fprintf(stderr,"Spin: usleep x%u thread=%llu caller=0x%lx\n",spin_calls,
+            (unsigned long long)(uintptr_t)pthread_self(),
+            (unsigned long)guest_cpu_return_address((uintptr_t)__builtin_return_address(0)));
+}
+static ABI int32_t kernel_usleep(uint32_t usec) { note_usleep_spin(); sleep_ns((uint64_t)usec*1000); return 0; }
+static ABI int32_t posix_usleep(uint32_t usec) { note_usleep_spin(); sleep_ns((uint64_t)usec*1000); return 0; }
 static ABI uint32_t posix_sleep(uint32_t seconds) { sleep_ns((uint64_t)seconds*1000000000); return 0; }
 static ABI int32_t posix_nanosleep(const GuestTimespec *rq,GuestTimespec *rem) {
     if (!rq || rq->nsec<0 || rq->nsec>=1000000000 || rq->sec<0) return fail_posix(EINVAL);
