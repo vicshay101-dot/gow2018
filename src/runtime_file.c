@@ -366,6 +366,7 @@ static int64_t do_read(int fd,void *buffer,uint64_t size) {
     if (h<0) return -EBADF;
     touch_for_write(buffer,size);
     int64_t r=transfer_full(fd,h,(char *)buffer,size,-1,"read");
+    record_file_io(fd,size,r>=0?(uint64_t)r:0,-1);
     if (r>=0) { __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)r,__ATOMIC_RELAXED); }
     return r;
 }
@@ -374,6 +375,7 @@ static int64_t do_pread(int fd,void *buffer,uint64_t size,int64_t offset) {
     if (h<0) return -EBADF;
     touch_for_write(buffer,size);
     int64_t r=transfer_full(fd,h,(char *)buffer,size,offset,"pread");
+    record_file_io(fd,size,r>=0?(uint64_t)r:0,offset);
     if (r>=0) { __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)r,__ATOMIC_RELAXED); }
     return r;
 }
