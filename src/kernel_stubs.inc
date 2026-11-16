@@ -161,11 +161,11 @@ static int32_t kernel_evf_wait_impl(uint64_t id,uint64_t pattern,uint32_t mode,u
     }
 }
 
+/* The wait-watch hooks were referenced here but had no implementation in this
+ * branch. Keep the actual event-flag wait semantics unchanged; diagnostic
+ * wait-watch instrumentation can be added once its shared implementation exists. */
 static ABI int32_t kernel_evf_wait(uint64_t id,uint64_t pattern,uint32_t mode,uint64_t *result,uint32_t *timeout_us) {
-    int ws=waitw_begin("evf",id);
-    int32_t r=kernel_evf_wait_impl(id,pattern,mode,result,timeout_us);
-    waitw_end(ws);
-    return r;
+    return kernel_evf_wait_impl(id,pattern,mode,result,timeout_us);
 }
 
 /* ---- POSIX semaphores: the guest sem_t just stores a pointer to a host object ---- */
@@ -199,10 +199,7 @@ static ABI int32_t kernel_sem_wait(KPsem **sem) {
     if (!sem || !*sem) return -1;
     KPsem *s=*sem;
     pthread_mutex_lock(&s->m);
-    int ws=-1;
-    if (!s->value) ws=waitw_begin("sem",(uint64_t)(uintptr_t)s);
     while (!s->value) pthread_cond_wait(&s->c,&s->m);
-    waitw_end(ws);
     --s->value;
     pthread_mutex_unlock(&s->m);
     return 0;
