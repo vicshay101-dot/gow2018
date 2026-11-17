@@ -713,6 +713,7 @@ void runtime_restart(void) {
 }
 
 void runtime_file_stats(unsigned long long *o,unsigned long long *r,unsigned long long *b,unsigned long long *m);
+size_t runtime_sema_snapshot(char *out,size_t size);
 void runtime_file_progress(void);
 #ifndef _WIN32
 /* Heartbeat: one line every 5 s with RSS, available RAM and thread count. If the log just stops,
@@ -738,6 +739,8 @@ static void *heartbeat_thread(void *arg) {
             fprintf(stderr,"%s\n",cl);
             char ts[1024]; guest_cpu_thread_states(ts,sizeof(ts));
             fprintf(stderr,"Heartbeat threads:%s\n",ts);
+            char sm[512]; runtime_sema_snapshot(sm,sizeof(sm));
+            fprintf(stderr,"Heartbeat semas:%s\n",sm);
         }
         fflush(stderr);
     }

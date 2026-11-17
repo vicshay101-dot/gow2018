@@ -176,6 +176,25 @@ uintptr_t runtime_sema_resolve(const char *name) {
     if (!strcmp(name,"R1Jvn8bSCW8#libkernel")) return (uintptr_t)sem_delete;
     return 0;
 }
+/* Heartbeat snapshot: "id=N c=count/max w=waiters" for each live semaphore, plus total signals. */
+size_t runtime_sema_snapshot(char *out,size_t size) {
+    if (!out || !size) return 0;
+    out[0]=0;
+    size_t used=0;
+    pthread_mutex_lock(&lock);
+    for (Sema *s=registry;s;s=s->next) {
+        if (s->deleted) continue;
+        unsigned w=0;
+        for (Waiter *q=s->first;q;q=q->next) ++w;
+        const int n=snprintf(out+used,size-used," [id=%u c=%d/%d w=%u]",s->id,s->count,s->maximum,w);
+        if (n<0 || (size_t)n>=size-used) break;
+        used+=(size_t)n;
+    }
+    const int n=snprintf(out+used,size-used," signals=%zu timeouts=%zu",signaled,timed_out);
+    if (n>0 && (size_t)n<size-used) used+=(size_t)n;
+    pthread_mutex_unlock(&lock);
+    return used;
+}
 void runtime_sema_report(void) {
     pthread_mutex_lock(&lock);
     printf("Runtime: semaphores created=%zu, deleted=%zu, acquired=%zu, signals=%zu, timeouts=%zu\n",
