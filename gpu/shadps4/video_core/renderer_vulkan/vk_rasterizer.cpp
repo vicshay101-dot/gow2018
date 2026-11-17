@@ -2207,16 +2207,21 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                                      reinterpret_cast<const void*>(vsharp.base_address),
                                      memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()));
             }
-            if (vsharp.base_address == 0 || vsharp.GetSize() == 0) {
+                        const u64 raw_size = vsharp.GetSize();
+            const bool invalid_sentinel = (raw_size >= 0xF0000000ULL);
+            const u64 size = (vsharp.base_address == 0 || raw_size == 0 || invalid_sentinel)
+                                 ? 0
+                                 : memory->ClampRangeSize(vsharp.base_address, raw_size);
+            if (size == 0) {
                 buffer_infos.emplace_back(VK_NULL_HANDLE, 0, VK_WHOLE_SIZE);
             } else {
-                const u64 size = memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize());
-                if (size != vsharp.GetSize()) {
-                    LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}",
-                              vsharp.GetSize(), size, stage.pgm_hash);
+                const u64 safe_size = size > (64ULL * 1024 * 1024) ? (64ULL * 1024 * 1024) : size;
+                if (safe_size != raw_size) {
+                    LOG_WARNING(Render, "Clamped buffer size from {} to {} for stage {:#x}",
+                                raw_size, safe_size, stage.pgm_hash);
                 }
                 const auto [buffer, offset] = buffer_cache.ObtainBuffer(
-                    vsharp.base_address, size, desc.is_written, desc.is_formatted);
+                    vsharp.base_address, safe_size, desc.is_written, desc.is_formatted);
                 const u64 offset_aligned = Common::AlignDown(offset, alignment);
                 const u64 adjust = offset - offset_aligned;
                 if (adjust % 4 != 0) {
@@ -2224,14 +2229,15 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                                 stage.pgm_hash);
                 }
                 push_data.AddOffset(binding.buffer, adjust);
-                buffer_infos.emplace_back(buffer->Handle(), offset_aligned, size + adjust);
-                bound_buffers.emplace_back(buffer, offset, size, desc.is_written);
+                buffer_infos.emplace_back(buffer->Handle(), offset_aligned, safe_size + adjust);
+                bound_buffers.emplace_back(buffer, offset, safe_size, desc.is_written);
                 if (desc.is_written) {
                     // Raw storage-buffer writes can also make an aliased cached image stale.
-                    texture_cache.InvalidateMemoryFromGPU(vsharp.base_address, size);
+                    texture_cache.InvalidateMemoryFromGPU(vsharp.base_address, safe_size);
                 }
-                needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size, desc.is_written);
+                needs_barrier |= runtime.IsBufferAccessed(buffer, offset, safe_size, desc.is_written);
             }
+
         }
 
         auto& set_write = set_writes[write_index++];
