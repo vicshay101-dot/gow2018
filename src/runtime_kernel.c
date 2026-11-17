@@ -424,4 +424,6 @@ static ABI int32_t key_create(uint32_t *key,KeyDestructor destructor) {
     pthread_mutex_unlock(&key_lock);
     return ERR(35);
 }
-static ABI int32_t key_delete(uint32_t key)
+/* Thread-exit key destructors were removed with the key-management cleanup (47a2e13a).
+ * Kept as a no-op so runtime_thread.c, which still calls it on thread exit, keeps linking. */
+void runtime_thread_keys_cleanup(void) {}
