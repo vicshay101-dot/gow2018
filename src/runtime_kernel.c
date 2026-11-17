@@ -106,8 +106,29 @@ static int sleep_ns(uint64_t ns) {
  * Every 2000 calls, print the guest return address (the function doing the polling) for that thread.
  * Subtract the "Image base" line from the printed address to get the image offset. */
 static __thread unsigned spin_calls;
+/* TEST (not a fix): the main thread polls the global A (image+0x1f98c70, int) from the loop whose
+ * usleep call returns to image+0x2d114a. Nothing in the emulator ever writes A, so after ~20000
+ * polls on that thread this sets A=1 once, to see how far the game goes when the wait is released.
+ * GOW3_NO_FORCE_A=1 turns it off. */
+#define SPIN_A_ADDR 0x80209cc70ULL
+#define SPIN_A_CALLER 0x8003d514aULL
+static void maybe_force_wait_flag(void) {
+    static int done;
+    if (done || spin_calls < 20000) return;
+    const char *off=getenv("GOW3_NO_FORCE_A");
+    if (off && off[0]=='1') { done=1; return; }
+    if (guest_cpu_return_address((uintptr_t)__builtin_return_address(0))!=SPIN_A_CALLER) return;
+    volatile int32_t *a=(volatile int32_t *)(uintptr_t)SPIN_A_ADDR;
+    if (*a==0) {
+        *a=1;
+        fprintf(stderr,"TEST: forced A=1 after %u usleep polls (thread=%llu)\n",spin_calls,(unsigned long long)(uintptr_t)pthread_self());
+    }
+    done=1;
+}
 static void note_usleep_spin(void) {
-    if (++spin_calls % 2000 != 0) return;
+    ++spin_calls;
+    maybe_force_wait_flag();
+    if (spin_calls % 2000 != 0) return;
     static int shown;
     if (shown >= 80) return;
     ++shown;
