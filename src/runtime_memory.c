@@ -41,6 +41,9 @@ static uint64_t pool_size_bytes(void) {
 #define PAGE UINT64_C(16384)
 #define USER_MIN UINT64_C(0x1000000000)
 #define USER_MAX UINT64_C(0xfc00000000)
+/* Top of the host user VA usable on the Poco F6 (measured with va_probe). Reservations past it
+   overlap host mappings, MAP_FIXED_NOREPLACE then fails with EEXIST, and the game loses the range. */
+#define HOST_VA_TOP UINT64_C(0x7ffeff8000)
 #define LIMIT 4096
 #define INVALID ((int32_t)UINT32_C(0x80020016))
 #define NO_MEMORY ((int32_t)UINT32_C(0x8002000c))
@@ -374,7 +377,7 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         if (!address) return NO_MEMORY;
     }
     if (kind==KIND_RESERVED && !(flags & MAP_FIXED_FLAG)) {
-        uint64_t limit=UINT64_C(0x8000000000);
+        uint64_t limit=HOST_VA_TOP;
         if (address<limit && address+size>limit) {
             uint64_t fit=(limit-address) & ~(uint64_t)(PAGE-1);
             fprintf(stderr,"Runtime: reservation at %p clamped from %" PRIu64 " to %" PRIu64 " bytes (host VA limit)\n",
