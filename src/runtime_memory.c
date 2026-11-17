@@ -40,11 +40,7 @@ static uint64_t pool_size_bytes(void) {
 #define FLEXIBLE_SIZE (UINT64_C(448) * 1024 * 1024)
 #define PAGE UINT64_C(16384)
 #define USER_MIN UINT64_C(0x1000000000)
-#ifdef _WIN32
 #define USER_MAX UINT64_C(0xfc00000000)
-#else
-#define USER_MAX UINT64_C(0x7f00000000)
-#endif
 #define LIMIT 4096
 #define INVALID ((int32_t)UINT32_C(0x80020016))
 #define NO_MEMORY ((int32_t)UINT32_C(0x8002000c))
@@ -377,8 +373,8 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         address=find_free(address,size,alignment);
         if (!address) return NO_MEMORY;
     }
-    if (kind==KIND_RESERVED) {
-        uint64_t limit=USER_MAX;
+    if (kind==KIND_RESERVED && !(flags & MAP_FIXED_FLAG)) {
+        uint64_t limit=UINT64_C(0x8000000000);
         if (address<limit && address+size>limit) {
             uint64_t fit=(limit-address) & ~(uint64_t)(PAGE-1);
             fprintf(stderr,"Runtime: reservation at %p clamped from %" PRIu64 " to %" PRIu64 " bytes (host VA limit)\n",
@@ -393,14 +389,15 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         fprintf(stderr,"Runtime: HOST MMAP FAILED addr=%p size=%" PRIu64 " phys=0x%" PRIx64 " kind=%d errno=%d (%s)\n",
                 (void *)address,size,phys,kind,host_errno,strerror(host_errno));
         fflush(stderr);
-        if (kind!=KIND_RESERVED && !(flags & MAP_FIXED_FLAG)) return NO_MEMORY;
+        if (kind==KIND_RESERVED) {
+            if (size>UINT64_C(0x40000000)) return NO_MEMORY;
+        } else if (!(flags & MAP_FIXED_FLAG)) return NO_MEMORY;
         uintptr_t moved=0, from=USER_MIN;
-        uint64_t step=alignment > UINT64_C(0x1000000) ? alignment : UINT64_C(0x1000000);
-        for (int attempt=0; attempt<256; ++attempt) {
+        for (int attempt=0; attempt<64; ++attempt) {
             moved=find_free(from,size,alignment);
             if (!moved) break;
             if (!host_map(moved,size,host_prot(prot),kind==KIND_RESERVED,phys)) break;
-            from=moved+step; moved=0;
+            from=moved+size; moved=0;
         }
         if (!moved) {
             fprintf(stderr,"Runtime: relocation of %s %p FAILED (errno=%d)\n",kind==KIND_RESERVED?"reservation":"fixed map",(void *)address,errno);
@@ -412,4 +409,5 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         address=moved;
     }
     if (overlaps(address,address+size,1)) {
-        for (size_t i=vma_index(address); i<vma_count && vmas[i].start<address+size;
+        for (size_t i=vma_index(address); i<vma_count && vmas[i].start<address+size; ++i)
+            if (vmas[i].kind
