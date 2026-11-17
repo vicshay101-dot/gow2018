@@ -1,0 +1,8 @@
+Extraia o conteúdo deste zip para a pasta de dados do app:
+
+Destino esperado:
+/data/user/0/com.gow3.android.bionic/files/
+
+Estrutura resultante:
+.../files/gow3port/gow3.ini
+.../files/gow3port/gow3.env

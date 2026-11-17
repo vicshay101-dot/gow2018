@@ -1,27 +1,53 @@
-# Correção do build – Kotlin Compose Plugin
+# gow2018-update – Tentativa de correção de tela preta
 
 ## Problema
-O build falhava com:
+Log mostrava milhares de erros:
+```
+BindBuffers: Clamped size from 4294967280 to ...
+```
+Isso indica tamanho de buffer inválido (0xFFFFFFF0) sendo passado para o Vulkan/Turnip → geometria não renderiza → tela preta.
+
+## O que este update faz
+Cria/atualiza o arquivo de configuração:
 
 ```
-Plugin [id: 'org.jetbrains.kotlin.plugin.compose', version: '2.2.10', apply: false] was not found
+gow3port/gow3.ini
 ```
 
-## Solução
-Atualizei a versão do plugin `org.jetbrains.kotlin.plugin.compose` de **2.2.10** para **2.2.21** (versão estável da mesma linha 2.2).
+Com as seguintes mudanças principais:
 
-A versão do Compose Compiler Gradle plugin **deve ser a mesma** da versão do Kotlin.
+| Flag / Setting              | Valor | Motivo                                      |
+|----------------------------|-------|---------------------------------------------|
+| deferred_readback          | 0     | Desliga path de readback que pode corromper tamanho de buffer |
+| readback_linear            | 0     | Simplifica path de textura                  |
+| shadows                    | 0     | Remove path pesado e problemático           |
+| object_motion              | 0     | Já estava off, reforça                      |
+| draw_workers               | 0     | Mais estável em Adreno                      |
+| dmem_mb                    | 4096  | Limite mais conservador                     |
+| frame_limit                | 30    | Reduz pressão                               |
+| safe_bind_buffers          | 1     | (se o build implementar) trata tamanho inválido |
+| clamp_invalid_buffer_size  | 1     | (se o build implementar)                    |
 
-## Como aplicar
-1. Substitua o arquivo `android-launcher/build.gradle.kts` pelo que está neste zip  
-   **ou**
-2. Altere manualmente a linha do plugin para:
+Também inclui `gow3.env` com variáveis de ambiente equivalentes.
 
-```kotlin
-id("org.jetbrains.kotlin.plugin.compose") version "2.2.21" apply false
+## Como a automação deve instalar
+O zip deve ser extraído de forma que o conteúdo de `gow3port/` vá para:
+
+```
+/data/user/0/com.gow3.android.bionic/files/gow3port/
 ```
 
-Se o projeto usar Version Catalog (`libs.versions.toml`), atualize também a versão do Kotlin/Compose lá.
+Ou seja, o arquivo final deve ficar em:
+
+```
+.../files/gow3port/gow3.ini
+```
+
+## Depois de instalar
+1. Force close do app
+2. Limpe cache se possível
+3. Abra o jogo novamente
+4. Colete novo log se ainda ficar preto
 
 ## Observação
-Se o restante do projeto já estiver em Kotlin 2.3.x ou 2.4.x, use a versão correspondente (ex: 2.3.21 ou 2.4.21).
+Estas flags são uma tentativa empírica. O erro de BindBuffers com 4294967280 provavelmente precisa de correção no código do rasterizer (vk_rasterizer.cpp). Estas configs apenas tentam desviar dos paths mais quebrados.
