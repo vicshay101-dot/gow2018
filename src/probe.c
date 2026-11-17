@@ -227,8 +227,11 @@ static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
 }
 #endif
 #ifndef _WIN32
+int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context);
 static void fault(int sig, siginfo_t *info, void *context) {
-    /* GPU page tracking (write-protected guest pages) is resolved first. */
+    /* Diagnostic write watch for the game-global wait flag A. */
+    if (runtime_watch_handle_fault(sig,info,context)) return;
+    /* GPU page tracking (write-protected guest pages) is resolved next. */
     if (gpu_enabled && sig == SIGSEGV && gow3gpu_handle_fault(context, info->si_addr)) return;
     /* Faults the guest CPU itself raises (JIT bookkeeping) are handled and resumed. */
     if (guest_cpu_handle_fault(sig, info, context)) return;
@@ -715,6 +718,7 @@ void runtime_restart(void) {
 void runtime_file_stats(unsigned long long *o,unsigned long long *r,unsigned long long *b,unsigned long long *m);
 size_t runtime_sema_snapshot(char *out,size_t size);
 void runtime_file_progress(void);
+void runtime_file_snapshot(void);
 #ifndef _WIN32
 /* Heartbeat: one line every 5 s with RSS, available RAM and thread count. If the log just stops,
  * the last line shows whether the process was starved of memory (Android kills it silently) or hung. */
@@ -730,7 +734,7 @@ static void *heartbeat_thread(void *arg) {
         unsigned threads=0; f=fopen("/proc/self/status","r");
         if (f) { char l[128]; while (fgets(l,sizeof(l),f)) if (sscanf(l,"Threads: %u",&threads)==1) break; fclose(f); }
         fprintf(stderr,"Heartbeat #%u: rss=%lu MiB, MemAvailable=%lu MiB, SwapFree=%lu MiB, threads=%u | gpu flips submitted=%llu presented=%llu draws=%llu dispatches=%llu\n",n,rss_pages*(unsigned long)sysconf(_SC_PAGESIZE)/1048576UL,avail_kb/1024,swap_kb/1024,threads,gow3gpu_stat(0),gow3gpu_stat(1),gow3gpu_stat(2),gow3gpu_stat(3));
-        { unsigned long long fo,fr,fb,fm; runtime_file_stats(&fo,&fr,&fb,&fm); fprintf(stderr,"Heartbeat files: opens=%llu reads=%llu read=%llu MiB not_found=%llu\n",fo,fr,fb/1048576ULL,fm); runtime_file_progress(); }
+        { unsigned long long fo,fr,fb,fm; runtime_file_stats(&fo,&fr,&fb,&fm); fprintf(stderr,"Heartbeat files: opens=%llu reads=%llu read=%llu MiB not_found=%llu\n",fo,fr,fb/1048576ULL,fm); runtime_file_progress(); runtime_file_snapshot(); }
         {
             const char *tn[8]; uint64_t td[8]={0}; size_t k=guest_cpu_stub_top(tn,td,8);
             if (k>8) k=8;

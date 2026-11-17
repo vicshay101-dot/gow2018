@@ -47,7 +47,14 @@ typedef struct {
 _Static_assert(sizeof(GuestStat)==120,"FreeBSD stat layout");
 
 typedef struct { char *names; size_t count, *offsets; unsigned char *types; } Listing;
-typedef struct { int used, host; Listing *dir; size_t position; char path[512]; } File;
+typedef struct {
+    int used, host; Listing *dir; size_t position; char path[512];
+    /* GOW3_FILE_STATE_V2: live read state, visible even while host I/O is blocked. */
+    unsigned active_reads;
+    uint64_t active_requested, active_done;
+    int64_t active_pos;
+    unsigned long long active_thread;
+} File;
 typedef struct { char guest[64]; char host[512]; } Mount;
 static File files[MAX_FILES];
 static Mount mounts[MAX_MOUNTS];
@@ -337,12 +344,28 @@ static int transient_errno(int e) {
 static ssize_t raw_io(int h,int64_t offset,int64_t pos,void *dst,uint64_t len) {
     return offset<0 ? host_read(h,dst,len) : pread(h,dst,len,(off_t)pos);
 }
+static void file_io_state(int fd,int delta,uint64_t requested,uint64_t done,int64_t pos) {
+    if (fd<3 || fd>=MAX_FILES) return;
+    pthread_mutex_lock(&lock);
+    File *f=&files[fd];
+    if (f->used) {
+        if (delta>0) ++f->active_reads;
+        else if (delta<0 && f->active_reads) --f->active_reads;
+        f->active_requested=requested;
+        f->active_done=done;
+        f->active_pos=pos;
+        f->active_thread=(unsigned long long)(uintptr_t)pthread_self();
+    }
+    pthread_mutex_unlock(&lock);
+}
 static int64_t transfer_full(int fd,int h,char *buffer,uint64_t size,int64_t offset,const char *what) {
     uint64_t total=0;
     int stalls=0;
     char *bounce=NULL;
+    file_io_state(fd,1,size,0,offset);
     while (total<size) {
         int64_t pos = offset<0 ? (int64_t)lseek(h,0,SEEK_CUR) : offset+(int64_t)total;
+        file_io_state(fd,0,size,total,pos);
         ssize_t n;
         if (!bounce) n = raw_io(h,offset,pos,buffer+total,size-total);
         else {
@@ -358,7 +381,7 @@ static int64_t transfer_full(int fd,int h,char *buffer,uint64_t size,int64_t off
             bounce=malloc(1u<<20);
             static int shown_bounce;
             if (shown_bounce<40) { ++shown_bounce; fprintf(stderr,"Runtime: %s EFAULT at buffer=%p len=%llu pos=%lld -> bounce copy\n",what,(void *)buffer,(unsigned long long)size,(long long)pos); }
-            if (!bounce) return -ENOMEM;
+            if (!bounce) { file_io_state(fd,-1,size,total,pos); return -ENOMEM; }
             continue;
         }
         if (n==0) {
@@ -374,9 +397,11 @@ static int64_t transfer_full(int fd,int h,char *buffer,uint64_t size,int64_t off
         static int shown;
         if (shown<40) { ++shown; fprintf(stderr,"Runtime: %s failed fd=%d pos=%lld got=%llu of %llu errno=%d (%s)\n",what,fd,(long long)pos,(unsigned long long)total,(unsigned long long)size,e,strerror(e)); }
         free(bounce);
+        file_io_state(fd,-1,size,total,pos);
         return total ? -(int64_t)EIO : -(int64_t)(e ? e : EIO);
     }
     free(bounce);
+    file_io_state(fd,-1,size,total,offset<0 ? (int64_t)lseek(h,0,SEEK_CUR) : offset+(int64_t)total);
     if (total<size) { static int shown_eof; if (shown_eof<20) { ++shown_eof; fprintf(stderr,"Runtime: %s EOF fd=%d got=%llu of %llu\n",what,fd,(unsigned long long)total,(unsigned long long)size); } }
     return (int64_t)total;
 }
@@ -637,3 +662,25 @@ void runtime_file_progress(void) {
             (unsigned long long)e->requested,(long long)e->offset,e->thread,e->path);
     }
 }
+/* GOW3_FILE_STATE_V2: snapshot open descriptors and reads currently inside host I/O. */
+void runtime_file_snapshot(void) {
+    unsigned shown=0;
+    pthread_mutex_lock(&lock);
+    for (int fd=3;fd<MAX_FILES && shown<32;++fd) {
+        File *f=&files[fd];
+        if (!f->used) continue;
+        HostStat st; int64_t pos=-1; long long size=-1;
+        if (f->host>=0) {
+            if (!f->dir) pos=(int64_t)host_lseek(f->host,0,SEEK_CUR);
+            if (!host_fstat(f->host,&st)) size=(long long)st.st_size;
+        }
+        fprintf(stderr,"  FILE_STATE fd=%d pos=%lld size=%lld active=%u active_pos=%lld active_done=%llu/%llu active_tid=%llu %s\n",
+            fd,(long long)pos,size,f->active_reads,(long long)f->active_pos,
+            (unsigned long long)f->active_done,(unsigned long long)f->active_requested,
+            f->active_thread,f->path);
+        ++shown;
+    }
+    if (!shown) fprintf(stderr,"  FILE_STATE no guest files currently open\n");
+    pthread_mutex_unlock(&lock);
+}
+
