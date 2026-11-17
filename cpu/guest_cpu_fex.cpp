@@ -32,6 +32,8 @@
 #include <shared_mutex>
 #include <unordered_map>
 #include <algorithm>
+#include <cstdio>
+#include <pthread.h>
 #include <utility>
 #include <vector>
 #include <sys/mman.h>
@@ -84,6 +86,16 @@ void* stub_functions[StubBytes / StubSize];
 std::atomic<size_t> stub_count;
 std::atomic<uint64_t> stub_calls[StubBytes / StubSize];
 const char* stub_names[StubBytes / StubSize];
+/* Per-thread "last host call" (diagnostics): which API each guest thread entered most recently. */
+struct ThreadLast {
+    std::atomic<size_t> stub{0};
+    std::atomic<uint64_t> calls{0};
+    unsigned long long tid{0};
+};
+constexpr size_t kThreadSlots = 64;
+ThreadLast* thread_registry[kThreadSlots];
+std::atomic<size_t> thread_registry_count{0};
+thread_local ThreadLast* this_thread_last = nullptr;
 std::mutex stub_lock;
 std::unordered_map<void*, uintptr_t> stub_of;
 
@@ -204,6 +216,14 @@ public:
                 Fatal("call of an unregistered host stub", rip);
             }
             stub_calls[offset / StubSize].fetch_add(1, std::memory_order_relaxed);
+            if (!this_thread_last) {
+                this_thread_last = new ThreadLast();
+                this_thread_last->tid = static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(pthread_self()));
+                const size_t slot = thread_registry_count.fetch_add(1, std::memory_order_relaxed);
+                if (slot < kThreadSlots) thread_registry[slot] = this_thread_last;
+            }
+            this_thread_last->stub.store(offset / StubSize, std::memory_order_relaxed);
+            this_thread_last->calls.fetch_add(1, std::memory_order_relaxed);
             CallHost(s, fn);
             s.rip = rip + 2;
             return;
@@ -571,6 +591,22 @@ void guest_cpu_name_stub(uintptr_t stub, const char* name) {
     if (stubs && index < StubBytes / StubSize) {
         stub_names[index] = name;
     }
+}
+size_t guest_cpu_thread_states(char* out, size_t size) {
+    if (!out || !size) return 0;
+    out[0] = 0;
+    size_t used = 0;
+    const size_t n = std::min(thread_registry_count.load(std::memory_order_acquire), kThreadSlots);
+    for (size_t i = 0; i < n; ++i) {
+        const ThreadLast* t = thread_registry[i];
+        const size_t s = t->stub.load(std::memory_order_relaxed);
+        const char* name = (s < StubBytes / StubSize && stub_names[s]) ? stub_names[s] : "?";
+        const int w = std::snprintf(out + used, size - used, " [%llx %s x%llu]", t->tid, name,
+                                    static_cast<unsigned long long>(t->calls.load(std::memory_order_relaxed)));
+        if (w < 0 || static_cast<size_t>(w) >= size - used) break;
+        used += static_cast<size_t>(w);
+    }
+    return used;
 }
 size_t guest_cpu_stub_top(const char** names, uint64_t* deltas, size_t max) {
     static uint64_t last[StubBytes / StubSize];

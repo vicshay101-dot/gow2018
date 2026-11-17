@@ -736,6 +736,8 @@ static void *heartbeat_thread(void *arg) {
             char cl[512]; int o=snprintf(cl,sizeof(cl),"Heartbeat calls (5 s):");
             for (size_t i=0;i<k && o<(int)sizeof(cl)-64;++i) o+=snprintf(cl+o,sizeof(cl)-(size_t)o," %s=%llu",tn[i],(unsigned long long)td[i]);
             fprintf(stderr,"%s\n",cl);
+            char ts[1024]; guest_cpu_thread_states(ts,sizeof(ts));
+            fprintf(stderr,"Heartbeat threads:%s\n",ts);
         }
         fflush(stderr);
     }
