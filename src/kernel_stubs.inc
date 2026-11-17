@@ -46,7 +46,7 @@ static ABI int32_t kernel_is_neo_mode(void) { return 0; }
 static ABI int32_t kernel_get_current_cpu(void) { return 0; }
 static ABI uint32_t kernel_sleep(uint32_t seconds) { sleep(seconds); return 0; }
 
-/* ================= eboot imports (God of War 2018 / GoW 3): kernel, posix, offline services ================= */
+/* ================= eboot imports (God of War 2018): kernel, posix, offline services ================= */
 #define KERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))   /* SCE_KERNEL_ERROR_* = 0x80020000|errno */
 #define KNP_SIGNED_OUT ((int32_t)0x80550006)             /* same offline answer runtime_services.c gives */
 #define KHTTP_NETWORK ((int32_t)0x80431063)
@@ -81,36 +81,11 @@ KSTUB_RET(sceNpGetAccountLanguageA,int32_t,KNP_SIGNED_OUT)
 KSTUB_RET(sceNpTssGetData,int32_t,KNP_SIGNED_OUT)
 KSTUB_RET(sceSystemServiceGetPlatformPrivacySetting,int32_t,KSYSTEM_PARAMETER)
 
-/* ---- stubs adicionados para desbloquear GoW 3 (NID rNhWz+lvOMU e relogio/sleep) ---- */
-static ABI int64_t kernel_nid_rNhWz_lvOMU(void *a, void *b, void *c, void *d) {
+/* Stub para NID nao resolvido no GoW 3 (rNhWz+lvOMU#libkernel) */
+static ABI int64_t kernel_gow3_nid_rNhWz_lvOMU(void *a, void *b, void *c, void *d) {
     KTRACE("rNhWz+lvOMU#libkernel");
     (void)a; (void)b; (void)c; (void)d;
     return 0;
-}
-static ABI uint64_t kernel_get_process_time(void) {
-    KTRACE("sceKernelGetProcessTime");
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000ULL);
-}
-static ABI uint64_t kernel_get_process_time_counter(void) {
-    KTRACE("sceKernelGetProcessTimeCounter");
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-static ABI uint64_t kernel_get_process_time_counter_freq(void) {
-    KTRACE("sceKernelGetProcessTimeCounterFrequency");
-    return 1000000000ULL;
-}
-static ABI int32_t kernel_usleep(uint32_t usec) {
-    KTRACE("sceKernelUsleep");
-    usleep(usec);
-    return 0;
-}
-static ABI int32_t kernel_nanosleep(const struct timespec *rqtp, struct timespec *rmtp) {
-    KTRACE("sceKernelNanosleep");
-    return nanosleep(rqtp, rmtp);
 }
 
 /* ---- event flags: 64-bit handle = id; one global condvar, broadcast on every change ---- */
@@ -322,12 +297,7 @@ static ABI int32_t kernel_playgo_language_mask(uint32_t h,uint64_t *mask) {
 #else
 
 /* TABELA: uma linha por funcao, formato {"nome","funcao"} */
-{"rNhWz+lvOMU",kernel_nid_rNhWz_lvOMU},
-{"sceKernelGetProcessTime",kernel_get_process_time},
-{"sceKernelGetProcessTimeCounter",kernel_get_process_time_counter},
-{"sceKernelGetProcessTimeCounterFrequency",kernel_get_process_time_counter_freq},
-{"sceKernelUsleep",kernel_usleep},
-{"sceKernelNanosleep",kernel_nanosleep},
+{"rNhWz+lvOMU",kernel_gow3_nid_rNhWz_lvOMU},
 
 {"sceKernelGetSanitizerMallocReplace",kernel_get_sanitizer_malloc_replace},
 {"sceKernelGetSanitizerMallocReplaceExternal",kernel_get_sanitizer_malloc_replace_external},
