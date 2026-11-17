@@ -25,6 +25,8 @@
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))
 #define PAGE 16384
 
+extern int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
+
 typedef struct { int64_t sec, nsec; } GuestTimespec;
 typedef struct { int64_t sec, usec; } GuestTimeval;
 
@@ -111,13 +113,10 @@ static int sleep_ns(uint64_t ns) {
  * Every 2000 calls, print the guest return address (the function doing the polling) for that thread.
  * Subtract the "Image base" line from the printed address to get the image offset. */
 static __thread unsigned spin_calls;
-/* TEST (not a fix): the main thread polls the global A (image+0x1f98c70, int) from the loop whose
- * usleep call returns to image+0x2d114a. Nothing in the emulator ever writes A, so after ~20000
- * polls on that thread this sets A=1 once, to see how far the game goes when the wait is released.
- * GOW3_NO_FORCE_A=1 turns it off. */
+/* The main thread polls the global A (image+0x1f98c70, int) from the loop whose usleep call
+ * returns to image+0x2d114a. After 20000 polls on that loop, set A=1 once unless GOW3_NO_FORCE_A=1. */
 #define SPIN_A_ADDR 0x80209cc70ULL
 #define SPIN_A_CALLER 0x8003d514aULL
-/* GOW3_WATCH_A_V1: arm a write watch on the page containing A before each matching poll. */
 #ifndef _WIN32
 static volatile sig_atomic_t watch_a_armed;
 static uintptr_t watch_a_page;
@@ -137,7 +136,8 @@ static int watch_a_find_protection(uintptr_t address,int *prot) {
     fclose(maps); return found;
 }
 static void arm_wait_flag_watch(uintptr_t caller) {
-    /* GOW3_WATCH_A_V2: automatic activation; no environment variable required. */
+    /* Auto-arm disabled: only enable mprotect watch on 0x80209c000 if GOW3_WATCH_A=1 is explicitly set. */
+    if (!getenv("GOW3_WATCH_A")) return;
     if (caller!=SPIN_A_CALLER || watch_a_armed) return;
     if (!watch_a_ready) {
         long ps=sysconf(_SC_PAGESIZE);
@@ -145,7 +145,7 @@ static void arm_wait_flag_watch(uintptr_t caller) {
         watch_a_page_size=(size_t)ps;
         watch_a_page=SPIN_A_ADDR & ~(uintptr_t)(watch_a_page_size-1);
         if (!watch_a_find_protection(SPIN_A_ADDR,&watch_a_original_prot) || !(watch_a_original_prot&PROT_WRITE)) {
-            fprintf(stderr,"GOW3_WATCH_A_V1: cannot watch A; original protection=%d page=%p\n",watch_a_original_prot,(void*)watch_a_page);
+            fprintf(stderr,"GOW3_WATCH_A: cannot watch A; original protection=%d page=%p\n",watch_a_original_prot,(void*)watch_a_page);
             watch_a_ready=-1; return;
         }
         watch_a_ready=1;
@@ -155,11 +155,7 @@ static void arm_wait_flag_watch(uintptr_t caller) {
     if (mprotect((void*)watch_a_page,watch_a_page_size,watch_a_original_prot&~PROT_WRITE)==0) {
         watch_a_armed=1;
         if (++arms==1 || arms%10000==0)
-            fprintf(stderr,"GOW3_WATCH_A_V2: armed automatically page=%p original_prot=%d arms=%u\n",(void*)watch_a_page,watch_a_original_prot,arms);
-    } else {
-        static unsigned failures;
-        if (++failures<=10 || failures%1000==0)
-            fprintf(stderr,"GOW3_WATCH_A_V2: mprotect arm failed errno=%d page=%p failures=%u\n",errno,(void*)watch_a_page,failures);
+            fprintf(stderr,"GOW3_WATCH_A: armed page=%p original_prot=%d arms=%u\n",(void*)watch_a_page,watch_a_original_prot,arms);
     }
 }
 int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context) {
@@ -168,13 +164,13 @@ int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context) {
     GuestRegs regs={0};
     int guest=guest_cpu_signal_regs(context,&regs);
     uintptr_t hostpc=guest_cpu_host_pc(context);
-    fprintf(stderr,"GOW3_WATCH_A_V1: page write addr=%p guest=%d rip=%#llx image_off=%#llx hostpc=%p A=%d B=%u tid=%ld\n",
+    fprintf(stderr,"GOW3_WATCH_A: page write addr=%p guest=%d rip=%#llx image_off=%#llx hostpc=%p A=%d B=%u tid=%ld\n",
         info->si_addr,guest,(unsigned long long)regs.rip,
         (unsigned long long)(regs.rip>=0x800104000ULL?regs.rip-0x800104000ULL:0),
         (void*)hostpc,(int)*(volatile int32_t*)(uintptr_t)SPIN_A_ADDR,
         (unsigned)*(volatile uint8_t*)(uintptr_t)0x802b172e1ULL,(long)(uintptr_t)pthread_self());
     if (mprotect((void*)watch_a_page,watch_a_page_size,watch_a_original_prot)!=0) {
-        fprintf(stderr,"GOW3_WATCH_A_V1: failed to restore page protection errno=%d\n",errno);
+        fprintf(stderr,"GOW3_WATCH_A: failed to restore page protection errno=%d\n",errno);
         return 0;
     }
     watch_a_armed=0;
@@ -183,30 +179,45 @@ int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context) {
 #else
 static void arm_wait_flag_watch(uintptr_t caller) { (void)caller; }
 #endif
-/* GOW3_WATCH_A_V2: the old test that wrote A=1 is deliberately disabled. */
-static void maybe_force_wait_flag(void) { }
-static void note_usleep_spin(void) {
+static void maybe_force_wait_flag(uintptr_t caller) {
+    static int forced;
+    if (forced || getenv("GOW3_NO_FORCE_A")) return;
+    if (caller!=SPIN_A_CALLER || spin_calls<20000) return;
+    if (!runtime_memory_is_mapped(SPIN_A_ADDR,sizeof(int32_t))) return;
+    volatile int32_t *flag_a=(volatile int32_t *)(uintptr_t)SPIN_A_ADDR;
+    if (*flag_a==0) {
+        *flag_a=1;
+        forced=1;
+        fprintf(stderr,"Spin: forced A=1 at 0x%llx after %u polls (caller=0x%lx)\n",
+                (unsigned long long)SPIN_A_ADDR,spin_calls,(unsigned long)caller);
+    }
+}
+static void note_usleep_spin(uintptr_t caller) {
     ++spin_calls;
-    maybe_force_wait_flag();
+    maybe_force_wait_flag(caller);
     if (spin_calls % 2000 != 0) return;
     static int shown;
     if (shown >= 80) return;
     ++shown;
     /* The spin waits on two image globals (image base 0x800104000): A = int at image+0x1f98c70,
      * B = byte at image+0x2a132e1. Printing them shows whether anything ever signals the wait. */
+    int val_a = runtime_memory_is_mapped(SPIN_A_ADDR, sizeof(int32_t))
+        ? (int)*(volatile int32_t *)(uintptr_t)SPIN_A_ADDR : -1;
+    unsigned val_b = runtime_memory_is_mapped(0x802b172e1ULL, sizeof(uint8_t))
+        ? (unsigned)*(volatile uint8_t *)(uintptr_t)0x802b172e1ULL : 255u;
     fprintf(stderr,"Spin: usleep x%u thread=%llu caller=0x%lx A=%d B=%u\n",spin_calls,
             (unsigned long long)(uintptr_t)pthread_self(),
-            (unsigned long)guest_cpu_return_address((uintptr_t)__builtin_return_address(0)),
-            (int)*(volatile int32_t *)(uintptr_t)0x80209cc70ULL,
-            (unsigned)*(volatile uint8_t *)(uintptr_t)0x802b172e1ULL);
+            (unsigned long)caller,
+            val_a,
+            val_b);
 }
 static ABI int32_t kernel_usleep(uint32_t usec) {
     uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
-    note_usleep_spin(); arm_wait_flag_watch(caller); sleep_ns((uint64_t)usec*1000); return 0;
+    note_usleep_spin(caller); arm_wait_flag_watch(caller); sleep_ns((uint64_t)usec*1000); return 0;
 }
 static ABI int32_t posix_usleep(uint32_t usec) {
     uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
-    note_usleep_spin(); arm_wait_flag_watch(caller); sleep_ns((uint64_t)usec*1000); return 0;
+    note_usleep_spin(caller); arm_wait_flag_watch(caller); sleep_ns((uint64_t)usec*1000); return 0;
 }
 static ABI uint32_t posix_sleep(uint32_t seconds) { sleep_ns((uint64_t)seconds*1000000000); return 0; }
 static ABI int32_t posix_nanosleep(const GuestTimespec *rq,GuestTimespec *rem) {
