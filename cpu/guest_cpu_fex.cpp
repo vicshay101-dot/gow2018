@@ -218,7 +218,7 @@ public:
             stub_calls[offset / StubSize].fetch_add(1, std::memory_order_relaxed);
             if (!this_thread_last) {
                 this_thread_last = new ThreadLast();
-                this_thread_last->tid = static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(pthread_self()));
+                this_thread_last->tid = static_cast<unsigned long long>(pthread_self());
                 const size_t slot = thread_registry_count.fetch_add(1, std::memory_order_relaxed);
                 if (slot < kThreadSlots) thread_registry[slot] = this_thread_last;
             }
