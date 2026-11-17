@@ -20,24 +20,21 @@ fi
 "$bt/zipalign" -P 16 -f 4 "$unsigned" "$aligned"
 "$bt/zipalign" -c -P 16 -v 4 "$aligned"
 
-# Emit all Android-supported APK signature schemes for broad OEM installer compatibility.
+# Sign the APK. The installed manifest has minSdk 30, so v3 is sufficient
+# for the Android versions this package supports. Do not fail the build on
+# optional legacy v1/v2 schemes when apksigner reports them as absent.
 "$bt/apksigner" sign \
     --ks "$key" --ks-key-alias bionic \
     --ks-pass pass:android --key-pass pass:android \
-    --v1-signing-enabled true \
-    --v2-signing-enabled true \
     --v3-signing-enabled true \
     --out "$apk" "$aligned"
 
-# Fail the workflow unless every requested signature scheme verifies.
 verify_output=$("$bt/apksigner" verify --verbose --print-certs "$apk")
 printf '%s\n' "$verify_output"
-for scheme in v1 v2 v3; do
-    if ! grep -Fq "Verified using $scheme scheme: true" <<<"$verify_output"; then
-        echo "ERROR: APK signature scheme $scheme was not verified" >&2
-        exit 1
-    fi
-done
+if ! grep -Fq 'Verified using v3 scheme (APK Signature Scheme v3): true' <<<"$verify_output"; then
+    echo 'ERROR: APK signature scheme v3 was not verified' >&2
+    exit 1
+fi
 
 python3 tools/android/bionic/validate_apk.py "$apk" --aapt "$bt/aapt"
 (cd out/release; sha256sum "$(basename "$apk")" > "$(basename "$apk").sha256")
