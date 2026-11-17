@@ -231,7 +231,7 @@ int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context);
 static void fault(int sig, siginfo_t *info, void *context) {
     /* GPU page tracking gets first chance to resolve its own protected-page faults. */
     if (gpu_enabled && sig == SIGSEGV && gow3gpu_handle_fault(context, info->si_addr)) return;
-    /* Diagnostic watch on the A page (only active when GOW3_WATCH_A=1). */
+    /* GOW3_WATCH_A_V2_ORDER: then handle the diagnostic watch on the A page. */
     if (runtime_watch_handle_fault(sig,info,context)) return;
     /* Faults the guest CPU itself raises (JIT bookkeeping) are handled and resumed. */
     if (guest_cpu_handle_fault(sig, info, context)) return;
@@ -362,4 +362,4 @@ static void fault(int sig, siginfo_t *info, void *context) {
             const uintptr_t st[2]={((const ucontext_t *)context)->uc_mcontext.regs[28],((const ucontext_t *)context)->uc_mcontext.regs[0]};
             for (int k=0;k<2;++k) {
                 uint64_t q[20];
-      
+ 
