@@ -111,9 +111,13 @@ static void note_usleep_spin(void) {
     static int shown;
     if (shown >= 80) return;
     ++shown;
-    fprintf(stderr,"Spin: usleep x%u thread=%llu caller=0x%lx\n",spin_calls,
+    /* The spin waits on two image globals (image base 0x800104000): A = int at image+0x1f98c70,
+     * B = byte at image+0x2a132e1. Printing them shows whether anything ever signals the wait. */
+    fprintf(stderr,"Spin: usleep x%u thread=%llu caller=0x%lx A=%d B=%u\n",spin_calls,
             (unsigned long long)(uintptr_t)pthread_self(),
-            (unsigned long)guest_cpu_return_address((uintptr_t)__builtin_return_address(0)));
+            (unsigned long)guest_cpu_return_address((uintptr_t)__builtin_return_address(0)),
+            (int)*(volatile int32_t *)(uintptr_t)0x80209cc70ULL,
+            (unsigned)*(volatile uint8_t *)(uintptr_t)0x802b172e1ULL);
 }
 static ABI int32_t kernel_usleep(uint32_t usec) { note_usleep_spin(); sleep_ns((uint64_t)usec*1000); return 0; }
 static ABI int32_t posix_usleep(uint32_t usec) { note_usleep_spin(); sleep_ns((uint64_t)usec*1000); return 0; }
