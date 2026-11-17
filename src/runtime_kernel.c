@@ -137,8 +137,8 @@ static int watch_a_find_protection(uintptr_t address,int *prot) {
     fclose(maps); return found;
 }
 static void arm_wait_flag_watch(uintptr_t caller) {
-    const char *enabled=getenv("GOW3_WATCH_A");
-    if (!enabled || enabled[0]!='1' || caller!=SPIN_A_CALLER || watch_a_armed) return;
+    /* GOW3_WATCH_A_V2: automatic activation; no environment variable required. */
+    if (caller!=SPIN_A_CALLER || watch_a_armed) return;
     if (!watch_a_ready) {
         long ps=sysconf(_SC_PAGESIZE);
         if (ps<=0) return;
@@ -151,11 +151,15 @@ static void arm_wait_flag_watch(uintptr_t caller) {
         watch_a_ready=1;
     }
     if (watch_a_ready<0) return;
+    static unsigned arms;
     if (mprotect((void*)watch_a_page,watch_a_page_size,watch_a_original_prot&~PROT_WRITE)==0) {
         watch_a_armed=1;
-        static unsigned arms;
         if (++arms==1 || arms%10000==0)
-            fprintf(stderr,"GOW3_WATCH_A_V1: armed page=%p original_prot=%d arms=%u\n",(void*)watch_a_page,watch_a_original_prot,arms);
+            fprintf(stderr,"GOW3_WATCH_A_V2: armed automatically page=%p original_prot=%d arms=%u\n",(void*)watch_a_page,watch_a_original_prot,arms);
+    } else {
+        static unsigned failures;
+        if (++failures<=10 || failures%1000==0)
+            fprintf(stderr,"GOW3_WATCH_A_V2: mprotect arm failed errno=%d page=%p failures=%u\n",errno,(void*)watch_a_page,failures);
     }
 }
 int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context) {
@@ -179,20 +183,8 @@ int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context) {
 #else
 static void arm_wait_flag_watch(uintptr_t caller) { (void)caller; }
 #endif
-static void maybe_force_wait_flag(void) {
-    static int done;
-    if (done || spin_calls < 20000) return;
-    const char *off=getenv("GOW3_NO_FORCE_A");
-    const char *watch=getenv("GOW3_WATCH_A");
-    if ((off && off[0]=='1') || (watch && watch[0]=='1')) { done=1; return; }
-    if (guest_cpu_return_address((uintptr_t)__builtin_return_address(0))!=SPIN_A_CALLER) return;
-    volatile int32_t *a=(volatile int32_t *)(uintptr_t)SPIN_A_ADDR;
-    if (*a==0) {
-        *a=1;
-        fprintf(stderr,"TEST: forced A=1 after %u usleep polls (thread=%llu)\n",spin_calls,(unsigned long long)(uintptr_t)pthread_self());
-    }
-    done=1;
-}
+/* GOW3_WATCH_A_V2: the old test that wrote A=1 is deliberately disabled. */
+static void maybe_force_wait_flag(void) { }
 static void note_usleep_spin(void) {
     ++spin_calls;
     maybe_force_wait_flag();

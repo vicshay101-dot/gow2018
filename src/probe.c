@@ -229,10 +229,10 @@ static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
 #ifndef _WIN32
 int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context);
 static void fault(int sig, siginfo_t *info, void *context) {
-    /* Diagnostic write watch for the game-global wait flag A. */
-    if (runtime_watch_handle_fault(sig,info,context)) return;
-    /* GPU page tracking (write-protected guest pages) is resolved next. */
+    /* GPU page tracking gets first chance to resolve its own protected-page faults. */
     if (gpu_enabled && sig == SIGSEGV && gow3gpu_handle_fault(context, info->si_addr)) return;
+    /* GOW3_WATCH_A_V2_ORDER: then handle the diagnostic watch on the A page. */
+    if (runtime_watch_handle_fault(sig,info,context)) return;
     /* Faults the guest CPU itself raises (JIT bookkeeping) are handled and resumed. */
     if (guest_cpu_handle_fault(sig, info, context)) return;
     /* A speculative guest memory read (runtime_memory.c) failed: resume its recovery point. */
