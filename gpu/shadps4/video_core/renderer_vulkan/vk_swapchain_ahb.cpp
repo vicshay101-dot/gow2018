@@ -23,7 +23,7 @@ namespace {
 constexpr u32 AhbFormat = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
 constexpr u64 AhbUsage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
                          AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
-                         AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
+                         AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER;
 
 /// GOW3_PRESENT_BUFFERS: the number of buffers (3 by default: one shown, one pending, one rendered).
 u32 BufferCount() {
