@@ -35,7 +35,9 @@ public final class Gow3Present {
         attached = holder;
         callback = new SurfaceHolder.Callback() {
             @Override public void surfaceCreated(SurfaceHolder h) { setSurface(h.getSurface()); }
-            @Override public void surfaceChanged(SurfaceHolder h, int format, int w, int height) {}
+            @Override public void surfaceChanged(SurfaceHolder h, int format, int w, int height) {
+                if (w > 0 && height > 0) setSurface(h.getSurface());
+            }
             // The game keeps running: its frames are dropped until a surface is back.
             @Override public void surfaceDestroyed(SurfaceHolder h) { setSurface(null); }
         };
