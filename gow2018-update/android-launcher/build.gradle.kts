@@ -1,0 +1,12 @@
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+plugins {
+    id("com.android.application") version "8.7.3" apply false   // ajuste se necessário
+    id("com.android.library") version "8.7.3" apply false
+    id("org.jetbrains.kotlin.android") version "2.2.21" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.2.21" apply false   // ← CORRIGIDO (era 2.2.10)
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.2.21" apply false
+}
+
+tasks.register<Delete>("clean") {
+    delete(rootProject.layout.buildDirectory)
+}
