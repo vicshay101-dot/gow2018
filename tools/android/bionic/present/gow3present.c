@@ -2,49 +2,6 @@
 /* libgow3present.so: the app's end of the Bionic game's frame path (tools/android/present/
  * gow3_present_proto.h). Listens on a unix socket, receives AHardwareBuffers and frames from the
  * game process and shows them with an ASurfaceControl child of the SurfaceView, scaled to fit.
- *
- * minSdk is 28: ASurfaceControl / ASurfaceTransaction (API 29) are resolved with dlsym; without
- * them frames are dropped (released at once) and start() says so. All state is behind one mutex.
- * The receive thread owns the socket; the display callbacks (any thread) answer RELEASE.
- *
- * Two presentation modes, chosen by the game in HELLO (GOW3_PRESENT_FLAG_FIFO; gow3.ini vsync) and changed by its MODE message while it runs (set_fifo):
- *
- *  - Newest wins ("VSync off", the default): present_frame() applies a transaction per FRAME at once.
- *    SurfaceFlinger latches at most one buffer per refresh, so frames that arrive within one refresh
- *    replace each other: the newest is shown, the others never are (their buffers come back through
- *    on_complete as the "replaced" buffer). No tearing, lowest latency.
- *
- *  - FIFO ("VSync on"): at most ONE transaction is outstanding. A FRAME that arrives while the previous
- *    transaction is outstanding waits in a queue; when that one is done, the next queued frame is
- *    applied. So each frame is on screen for at least one refresh, in order, and with the display
- *    slower than the game the game is paced by the refresh rate: the
- *    queue is bounded (a frame in it is a buffer the game does not get back, and the game holds one
- *    to render, so with `count` buffers the app holds at most count of them: the one on the display,
- *    the outstanding one and count - 2 queued; the array has room for GOW3_PRESENT_MAX_BUFFERS).
- *
- * "Done" means LATCHED, not presented: ASurfaceTransaction_setOnComplete fires after the frame has been
- * presented (its present fence), which is already past the latch deadline of the next refresh, so
- * gating the next transaction on it would show one frame every 2nd refresh (30 FPS on 60 Hz).
- * ASurfaceTransaction_setOnCommit (API 31) fires when SurfaceFlinger latches the transaction, early
- * in the refresh before the one that shows it; the next transaction applied right then is latched for
- * the following refresh. So with setOnCommit (resolved with dlsym) the commit callback clears the
- * outstanding transaction and the complete callback only answers RELEASE, as in the other mode. On
- * API 29/30 there is no setOnCommit: on_complete does both, and FIFO pacing may halve the rate there
- * (logged once).
- *
- * Who applies the next queued transaction: the receive thread, never a callback. The callbacks run on
- * a binder thread inside libgui's transaction-callback dispatch; whether applying another transaction
- * (which registers callbacks with the same TransactionCompletedListener) from inside one is safe
- * depends on its locking, which the NDK does not promise. So the callback only marks the transaction
- * done and wakes the receive thread through an eventfd; the receive thread polls the socket and the
- * eventfd, and applies from there (under the mutex like everything else). Cost: one thread wake-up
- * (well under a millisecond, far below the refresh interval).
- *
- * Callback ownership: each transaction has a DoneCtx (on_complete, frees it) and, in FIFO mode with
- * setOnCommit, a CommitCtx of its own (on_commit, frees it): each callback fires exactly once per
- * applied transaction, so each context has one owner and nothing is shared or counted. Both carry the
- * session and the transaction id; a callback of an older session or transaction does not touch
- * S.inflight.
  */
 #include "geometry.h"
 #include <android/hardware_buffer.h>
@@ -83,6 +40,7 @@ static struct {
     void (*set_buffer)(ASurfaceTransaction*, ASurfaceControl*, AHardwareBuffer*, int);
     void (*set_geometry)(ASurfaceTransaction*, ASurfaceControl*, const ARect*, const ARect*, int32_t);
     void (*set_visibility)(ASurfaceTransaction*, ASurfaceControl*, int8_t);
+    void (*set_z_order)(ASurfaceTransaction*, ASurfaceControl*, int32_t);
     void (*set_transparency)(ASurfaceTransaction*, ASurfaceControl*, int8_t);
     void (*set_on_complete)(ASurfaceTransaction*, void*, void (*)(void*, ASurfaceTransactionStats*));
     void (*set_on_commit)(ASurfaceTransaction*, void*, void (*)(void*, ASurfaceTransactionStats*)); /* API 31, optional */
@@ -96,6 +54,7 @@ static void load_api(void) {
     void* lib = dlopen("libandroid.so", RTLD_NOW);
     if (!lib) return;
     *(void**)&api.set_on_commit = dlsym(lib, "ASurfaceTransaction_setOnCommit"); /* optional */
+    *(void**)&api.set_z_order = dlsym(lib, "ASurfaceTransaction_setZOrder");
 #define SYM(field, name) if (!(*(void**)&api.field = dlsym(lib, name))) return
     SYM(create_from_window, "ASurfaceControl_createFromWindow");
     SYM(release, "ASurfaceControl_release");
@@ -131,15 +90,12 @@ static struct {
     ANativeWindow* window;
     ASurfaceControl* sc;
     int last_set; /* buffer index of the newest transaction, -1 none */
-    /* FIFO mode (the connection's HELLO flags): frames wait in queue[] while a transaction is
-     * outstanding. inflight is the id (txn_seq) of the newest transaction not yet completed, 0 none;
-     * on_complete of an older one (after a surface loss, say) does not clear it. */
     int fifo;
     Queued queue[GOW3_PRESENT_MAX_BUFFERS];
     uint32_t queue_head, queue_len;
     uint64_t txn_seq, inflight;
-    int wake_fd; /* eventfd: on_complete -> the receive thread (apply the next queued frame) */
-    /* Connection (session ids tell the display callbacks which connection they belong to). */
+    int wake_fd;
+    /* Connection. */
     int conn_fd;
     uint32_t session;
     uint32_t generation;
@@ -162,9 +118,6 @@ static void send_release(uint32_t generation, uint32_t index, uint64_t frame, in
     if (fence >= 0) close(fence);
 }
 
-/* Empties the FIFO queue. release: answer RELEASE for each frame with its own acquire fence (the
- * game's writes are what its buffer still waits for), as for a frame dropped for want of a display;
- * else the buffers are gone (RESET, new HELLO, connection closed): only the fences are closed. */
 static void clear_queue(int release) {
     while (S.queue_len) {
         Queued* q = &S.queue[S.queue_head];
@@ -187,12 +140,9 @@ static void drop_buffers(void) {
 }
 
 static void drop_surface_control(void) {
-    /* No display: queued frames are dropped like any frame that arrives without one. A transaction
-     * still outstanding on the old control is forgotten (its on_complete changes nothing). */
     clear_queue(1);
     S.inflight = 0;
     if (S.sc) {
-        /* The newest buffer is on the display until the control goes: its release has no fence. */
         if (S.last_set >= 0 && S.conn_fd >= 0)
             send_release(S.generation, (uint32_t)S.last_set, 0, -1);
         S.last_set = -1;
@@ -209,10 +159,10 @@ static void make_surface_control(void) {
 }
 
 typedef struct {
-    uint32_t session, generation, index; /* the buffer the transaction replaced; index == ~0: none */
+    uint32_t session, generation, index;
     uint64_t frame;
-    uint64_t seq; /* the transaction's id (S.txn_seq), compared with S.inflight */
-    int gates;    /* FIFO without a commit callback: this on_complete ends the outstanding state */
+    uint64_t seq;
+    int gates;
 } DoneCtx;
 
 typedef struct {
@@ -240,8 +190,6 @@ static void on_complete(void* ctx_, ASurfaceTransactionStats* stats) {
     } else if (fence >= 0) {
         close(fence);
     }
-    /* FIFO: this transaction is on the display, the next queued frame may go (applied by the
-     * receive thread, see the top of the file). */
     if (ctx->gates && S.fifo && ctx->session == S.session && ctx->seq == S.inflight) {
         S.inflight = 0;
         if (S.queue_len) wake_receiver();
@@ -250,7 +198,6 @@ static void on_complete(void* ctx_, ASurfaceTransactionStats* stats) {
     free(ctx);
 }
 
-/* FIFO, API 31: SurfaceFlinger latched the transaction; the next queued frame may go. */
 static void on_commit(void* ctx_, ASurfaceTransactionStats* stats) {
     (void)stats;
     CommitCtx* ctx = ctx_;
@@ -263,8 +210,6 @@ static void on_commit(void* ctx_, ASurfaceTransactionStats* stats) {
     free(ctx);
 }
 
-/* Hands one frame to SurfaceFlinger: a transaction with the buffer, the fit-to-window geometry and
- * the acquire fence (taken). Needs S.sc and the API; the frame's buffer is checked by the callers. */
 static void show_frame(uint32_t generation, uint32_t index, uint64_t frame, uint32_t width, uint32_t height,
                        int acquire_fd) {
     int w = ANativeWindow_getWidth(S.window), h = ANativeWindow_getHeight(S.window);
@@ -277,7 +222,7 @@ static void show_frame(uint32_t generation, uint32_t index, uint64_t frame, uint
     if (!ctx) { send_release(generation, index, frame, acquire_fd); return; }
     ctx->session = S.session;
     ctx->generation = S.generation;
-    ctx->index = S.last_set >= 0 ? (uint32_t)S.last_set : ~0u; /* replaced by this transaction */
+    ctx->index = S.last_set >= 0 ? (uint32_t)S.last_set : ~0u;
     ctx->frame = 0;
     ctx->seq = ++S.txn_seq;
     ctx->gates = 0;
@@ -287,12 +232,13 @@ static void show_frame(uint32_t generation, uint32_t index, uint64_t frame, uint
             commit->session = ctx->session;
             commit->seq = ctx->seq;
         } else {
-            ctx->gates = 1; /* no commit callback: the complete one gates (API 29/30, or no memory) */
+            ctx->gates = 1;
         }
     }
     ASurfaceTransaction* t = api.txn_create();
-    api.set_buffer(t, S.sc, S.bufs[index], acquire_fd); /* takes the fd */
+    api.set_buffer(t, S.sc, S.bufs[index], acquire_fd);
     api.set_geometry(t, S.sc, &src, &dst, 0);
+    if (api.set_z_order) api.set_z_order(t, S.sc, 1);
     api.set_transparency(t, S.sc, ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE);
     api.set_visibility(t, S.sc, ASURFACE_TRANSACTION_VISIBILITY_SHOW);
     api.set_on_complete(t, ctx, on_complete);
@@ -303,22 +249,19 @@ static void show_frame(uint32_t generation, uint32_t index, uint64_t frame, uint
     if (S.fifo) S.inflight = ctx->seq;
 }
 
-/* FIFO: applies the oldest queued frame when no transaction is outstanding. Called from the receive
- * thread only (a new frame, or the wake-up from on_complete). */
 static void pump_queue(void) {
     while (S.fifo && S.queue_len && !S.inflight) {
         Queued q = S.queue[S.queue_head];
         S.queue_head = (S.queue_head + 1) % GOW3_PRESENT_MAX_BUFFERS;
         S.queue_len--;
         if (!S.sc || !api.ok || q.generation != S.generation || q.index >= S.count || !S.bufs[q.index]) {
-            send_release(q.generation, q.index, q.frame, q.fence); /* cannot be shown: give it back */
+            send_release(q.generation, q.index, q.frame, q.fence);
             continue;
         }
-        show_frame(q.generation, q.index, q.frame, q.width, q.height, q.fence); /* sets S.inflight: the loop ends */
+        show_frame(q.generation, q.index, q.frame, q.width, q.height, q.fence);
     }
 }
 
-/* Warns once that FIFO may run at half rate (API 29/30: no commit callback). */
 static void warn_fifo_without_commit(void) {
     static int warned;
     if (!warned && !api.set_on_commit) {
@@ -328,13 +271,6 @@ static void warn_fifo_without_commit(void) {
     }
 }
 
-/* The game's MODE message: FIFO <-> newest wins, between two frames. Lock held.
- *  - FIFO -> newest wins: the newest queued frame is applied now (if it can be shown), every older
- *    queued frame is released unseen with its own acquire fence, as for any frame the display does
- *    not take. The transaction still outstanding stays (its callbacks only answer RELEASE now: they
- *    clear S.inflight only in FIFO mode, and S.inflight is 0 from here).
- *  - newest wins -> FIFO: nothing is queued yet and nothing outstanding counts, so the next frame is
- *    applied at once and the ones after it queue behind its commit. */
 static void set_fifo(int fifo) {
     fifo = fifo != 0;
     if (fifo == S.fifo) return;
@@ -347,7 +283,7 @@ static void set_fifo(int fifo) {
             Queued q = S.queue[S.queue_head];
             S.queue_head = (S.queue_head + 1) % GOW3_PRESENT_MAX_BUFFERS;
             S.queue_len--;
-            if (have) send_release(newest.generation, newest.index, newest.frame, newest.fence); /* replaced unseen */
+            if (have) send_release(newest.generation, newest.index, newest.frame, newest.fence);
             newest = q;
             have = 1;
         }
@@ -368,12 +304,10 @@ static void set_fifo(int fifo) {
 static void present_frame(const gow3_present_msg* m, int acquire_fd) {
     if (m->generation != S.generation || m->index >= S.count || !S.bufs[m->index]) {
         if (acquire_fd >= 0) close(acquire_fd);
-        return; /* a frame of a set we do not have: nothing to show, nothing to release */
+        return;
     }
     atomic_fetch_add(&S.frames, 1);
     if (!S.sc || !api.ok) {
-        /* No display now (surface lost, app paused): the frame is dropped; its own acquire fence
-         * is the release (the game's writes are what the buffer still waits for). */
         send_release(m->generation, m->index, m->frame, acquire_fd);
         return;
     }
@@ -382,8 +316,6 @@ static void present_frame(const gow3_present_msg* m, int acquire_fd) {
         return;
     }
     if (S.queue_len == GOW3_PRESENT_MAX_BUFFERS) {
-        /* Cannot happen with a game that waits for RELEASE (it holds at most count <= MAX_BUFFERS
-         * buffers); a broken one loses its oldest queued frame instead of growing the queue. */
         LOGE("frame queue full: dropping the oldest");
         Queued* old = &S.queue[S.queue_head];
         send_release(old->generation, old->index, old->frame, old->fence);
@@ -405,13 +337,11 @@ static void close_connection(void) {
     if (S.conn_fd >= 0) { close(S.conn_fd); S.conn_fd = -1; }
     S.session++;
     S.last_set = -1;
-    drop_buffers(); /* also the FIFO queue (no connection to release to) and the outstanding id */
+    drop_buffers();
     S.count = 0;
     S.fifo = 0;
-    /* The control stays: the next game connection shows on the same surface. */
 }
 
-/* Serves one connection until it ends. Called without the lock. */
 static void serve(int fd) {
     pthread_mutex_lock(&S.lock);
     S.conn_fd = fd;
@@ -423,7 +353,6 @@ static void serve(int fd) {
     pthread_mutex_unlock(&S.lock);
     LOGI("game connected");
     for (;;) {
-        /* Block until the game sends something, or on_complete asks for the next queued frame. */
         struct pollfd pfds[2] = {{fd, POLLIN, 0}, {S.wake_fd, POLLIN, 0}};
         if (poll(pfds, 2, -1) < 0) {
             if (errno == EINTR) continue;
@@ -440,7 +369,7 @@ static void serve(int fd) {
         if (!(pfds[0].revents & (POLLIN | POLLHUP | POLLERR))) continue;
         gow3_present_msg m;
         int fence = -1;
-        int r = gow3_present_recv(fd, &m, &fence, 0); /* no lock: data (or the close) is there */
+        int r = gow3_present_recv(fd, &m, &fence, 0);
         if (r != 0) {
             if (r != -ECONNRESET) LOGE("receive failed: %d", r);
             break;
@@ -455,7 +384,7 @@ static void serve(int fd) {
                 stop = 1;
                 break;
             }
-            drop_buffers(); /* clears the FIFO queue too */
+            drop_buffers();
             S.generation = m.generation;
             S.count = m.count;
             S.fifo = (m.flags & GOW3_PRESENT_FLAG_FIFO) != 0;
@@ -463,18 +392,17 @@ static void serve(int fd) {
             if (S.fifo) warn_fifo_without_commit();
             gow3_present_msg a = gow3_present_make(GOW3_PRESENT_HELLO);
             a.generation = m.generation;
-            a.flags = m.flags & GOW3_PRESENT_FLAGS_KNOWN; /* what the app will do */
+            a.flags = m.flags & GOW3_PRESENT_FLAGS_KNOWN;
             stop = gow3_present_send(fd, &a, -1) != 0;
             break;
         }
         case GOW3_PRESENT_RESET:
-            drop_buffers(); /* clears the FIFO queue too: its frames belong to the old set */
+            drop_buffers();
             S.generation = m.generation;
             S.count = m.count <= GOW3_PRESENT_MAX_BUFFERS ? m.count : 0;
             break;
         case GOW3_PRESENT_BUFFER: {
             AHardwareBuffer* b = NULL;
-            /* The buffer is the very next datagram. */
             pthread_mutex_unlock(&S.lock);
             int rr = AHardwareBuffer_recvHandleFromUnixSocket(fd, &b);
             pthread_mutex_lock(&S.lock);
@@ -516,7 +444,7 @@ static void* server_thread(void* unused) {
         int fd = accept4(S.server_fd, NULL, NULL, SOCK_CLOEXEC);
         if (fd < 0) {
             if (errno == EINTR) continue;
-            return NULL; /* closed by shutdown */
+            return NULL;
         }
         serve(fd);
     }
@@ -532,7 +460,6 @@ JNIEXPORT void JNICALL Java_ro_cobrabm_fexdroid_Gow3Present_nativeSetFullscreen(
     pthread_mutex_unlock(&S.lock);
 }
 
-
 JNIEXPORT jstring JNICALL Java_ro_cobrabm_fexdroid_Gow3Present_nativeStart(JNIEnv* env, jclass cls,
         jstring jpath) {
     (void)cls;
@@ -541,7 +468,7 @@ JNIEXPORT jstring JNICALL Java_ro_cobrabm_fexdroid_Gow3Present_nativeStart(JNIEn
     pthread_mutex_lock(&S.lock);
     if (!S.started) {
         load_api();
-        if (S.wake_fd < 0) /* kept for the life of the process: the receive thread may still poll it */
+        if (S.wake_fd < 0)
             S.wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
         if (S.wake_fd < 0) {
             snprintf(msg, sizeof msg, "eventfd failed: %s", strerror(errno));
@@ -587,6 +514,11 @@ JNIEXPORT void JNICALL Java_ro_cobrabm_fexdroid_Gow3Present_nativeSetSurface(JNI
     if (surface) {
         S.window = ANativeWindow_fromSurface(env, surface);
         make_surface_control();
+        if (S.sc && S.count > 0 && S.bufs[0]) {
+            AHardwareBuffer_Desc desc;
+            AHardwareBuffer_describe(S.bufs[0], &desc);
+            show_frame(S.generation, 0, 0, desc.width, desc.height, -1);
+        }
     }
     pthread_mutex_unlock(&S.lock);
 }
