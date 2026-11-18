@@ -316,6 +316,18 @@ static ABI int32_t memory_setup(int32_t user, uint64_t size, const Param *param)
         fseek(f,0,SEEK_END);
         long existed=ftell(f);
         memory_existed=existed>0 ? (uint64_t)existed : 0;
+        /* A blob that only holds zeros was created by ftruncate on an earlier run and never
+         * written by the game: report it as just created, or the game reads an "existing" save
+         * with no header and raises a debug exception (exit 23). */
+        if (memory_existed) {
+            static unsigned char chunk[1<<16];
+            int any=0; size_t n;
+            rewind(f);
+            while (!any && (n=fread(chunk,1,sizeof(chunk),f))>0)
+                for (size_t i=0;i<n;++i) if (chunk[i]) { any=1; break; }
+            if (!any) memory_existed=0;
+            fseek(f,0,SEEK_END);
+        }
         snprintf(memory_dir,sizeof(memory_dir),"%s",dir);
         if ((uint64_t)ftell(f)<size && ftruncate(fileno(f),(off_t)size)) goto done;
         memory_size=size; r=0;
