@@ -367,6 +367,27 @@ static void drop_range(uintptr_t start, uintptr_t end) {
 }
 /* Places a host mapping; with MAP_FIXED it replaces what the guest had there. */
 #ifndef _WIN32
+/* Lowest start of a host mapping above `address`; 0 if `address` itself is already mapped; UINT64_MAX if
+   nothing above it is mapped. Android keeps its libraries, heaps and stacks in the upper part of the 39-bit
+   space, so a huge guest reservation has to stop short of them instead of failing with EEXIST. */
+static uint64_t host_blocker_above(uintptr_t address) {
+    FILE *maps=fopen("/proc/self/maps","r");
+    if (!maps) return UINT64_MAX;
+    char line[512]; uint64_t blocker=UINT64_MAX;
+    while (fgets(line,sizeof(line),maps)) {
+        unsigned long lo,hi;
+        if (sscanf(line,"%lx-%lx",&lo,&hi)!=2) continue;
+        if (hi<=address) continue;
+        blocker = lo<=address ? 0 : lo;   /* ascending order: the first hit is the nearest one */
+        break;
+    }
+    fclose(maps);
+    return blocker;
+}
+#else
+static uint64_t host_blocker_above(uintptr_t address) { (void)address; return UINT64_MAX; }
+#endif
+#ifndef _WIN32
 /* Host-chosen placement for a reservation that has no free host range at its guest address.
    The kernel picks the spot (top-down, below the guest-usable limit); the size is halved until it fits. */
 static uintptr_t reserve_on_host(uint64_t *size) {
@@ -394,10 +415,15 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
     }
     if (kind==KIND_RESERVED && !(flags & MAP_FIXED_FLAG)) {
         uint64_t limit=HOST_VA_TOP;
+        if (size>UINT64_C(0x40000000)) {
+            uint64_t blocker=host_blocker_above(address);
+            if (blocker>address && blocker<limit && blocker-address>=UINT64_C(0x40000000))
+                limit=blocker & ~(uint64_t)(PAGE-1);
+        }
         if (address<limit && address+size>limit) {
             uint64_t fit=(limit-address) & ~(uint64_t)(PAGE-1);
-            fprintf(stderr,"Runtime: reservation at %p clamped from %" PRIu64 " to %" PRIu64 " bytes (host VA limit)\n",
-                    (void *)address,size,fit);
+            fprintf(stderr,"Runtime: reservation at %p clamped from %" PRIu64 " to %" PRIu64 " bytes (host VA limit or first host mapping at %p)\n",
+                    (void *)address,size,fit,(void *)(uintptr_t)limit);
             size=fit;
         }
     }
@@ -408,9 +434,10 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         fprintf(stderr,"Runtime: HOST MMAP FAILED addr=%p size=%" PRIu64 " phys=0x%" PRIx64 " kind=%d errno=%d (%s)\n",
                 (void *)address,size,phys,kind,host_errno,strerror(host_errno));
         fflush(stderr);
-        if (kind==KIND_RESERVED) {
-            /* Reservations only need some free host range. Their guest address is handed back, so let the
-               kernel choose one instead of walking the guest VMA table, which does not know host mappings. */
+        if (kind==KIND_RESERVED && size>UINT64_C(0x40000000)) {
+            /* A huge reservation only needs some free host range. Its guest address is handed back, so let the
+               kernel choose one (shrinking the size if needed) instead of walking the guest VMA table, which
+               does not know host mappings. */
             uint64_t placed_size=size;
             uintptr_t picked=reserve_on_host(&placed_size);
             if (!picked) {
@@ -422,20 +449,21 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
             fflush(stderr);
             address=picked; size=placed_size;
         } else {
-            if (!(flags & MAP_FIXED_FLAG)) return NO_MEMORY;
+            /* Small reservations (<= 1 GiB) and fixed maps: relocate to the next free guest range. */
+            if (kind!=KIND_RESERVED && !(flags & MAP_FIXED_FLAG)) return NO_MEMORY;
             uintptr_t moved=0, from=USER_MIN;
             for (int attempt=0; attempt<64; ++attempt) {
                 moved=find_free(from,size,alignment);
                 if (!moved) break;
-                if (!host_map(moved,size,host_prot(prot),0,phys)) break;
+                if (!host_map(moved,size,host_prot(prot),kind==KIND_RESERVED,phys)) break;
                 from=moved+size; moved=0;
             }
             if (!moved) {
-                fprintf(stderr,"Runtime: relocation of fixed map %p FAILED (errno=%d)\n",(void *)address,errno);
+                fprintf(stderr,"Runtime: relocation of %s %p FAILED (errno=%d)\n",kind==KIND_RESERVED?"reservation":"fixed map",(void *)address,errno);
                 fflush(stderr);
                 return NO_MEMORY;
             }
-            fprintf(stderr,"Runtime: fixed map %p relocated to %p (size=%" PRIu64 ")\n",(void *)address,(void *)moved,size);
+            fprintf(stderr,"Runtime: %s %p relocated to %p (size=%" PRIu64 ")\n",kind==KIND_RESERVED?"reservation":"fixed map",(void *)address,(void *)moved,size);
             fflush(stderr);
             address=moved;
         }
