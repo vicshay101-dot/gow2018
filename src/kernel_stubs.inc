@@ -88,6 +88,19 @@ static ABI int64_t kernel_gow3_nid_rNhWz_lvOMU(void *a, void *b, void *c, void *
     return 0;
 }
 
+/* Stubs TLS (eoht7mQOCmo, +BzXYkqYeLE, PrdHuuDekhY) */
+static ABI void *kernel_pthread_getspecific(int32_t key) {
+    return pthread_getspecific((pthread_key_t)key);
+}
+static ABI int32_t kernel_pthread_setspecific(int32_t key, const void *value) {
+    int r = pthread_setspecific((pthread_key_t)key, value);
+    return r ? KERR(r) : 0;
+}
+static ABI int32_t kernel_pthread_key_delete(int32_t key) {
+    int r = pthread_key_delete((pthread_key_t)key);
+    return r ? KERR(r) : 0;
+}
+
 /* ---- event flags: 64-bit handle = id; one global condvar, broadcast on every change ---- */
 typedef struct KEvf { uint64_t id, bits; int deleted; struct KEvf *next; } KEvf;
 static pthread_mutex_t kevf_lock=PTHREAD_MUTEX_INITIALIZER;
@@ -298,6 +311,9 @@ static ABI int32_t kernel_playgo_language_mask(uint32_t h,uint64_t *mask) {
 
 /* TABELA: uma linha por funcao, formato {"nome","funcao"} */
 {"rNhWz+lvOMU",kernel_gow3_nid_rNhWz_lvOMU},
+{"eoht7mQOCmo",kernel_pthread_getspecific},
+{"+BzXYkqYeLE",kernel_pthread_setspecific},
+{"PrdHuuDekhY",kernel_pthread_key_delete},
 
 {"sceKernelGetSanitizerMallocReplace",kernel_get_sanitizer_malloc_replace},
 {"sceKernelGetSanitizerMallocReplaceExternal",kernel_get_sanitizer_malloc_replace_external},
