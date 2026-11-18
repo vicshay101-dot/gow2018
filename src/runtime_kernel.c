@@ -26,6 +26,13 @@
 #define PAGE 16384
 
 extern int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
+extern uintptr_t guest_image_base;
+extern uint64_t guest_image_size;
+/* Image globals live in the probe-mapped image, which runtime_memory does not track. */
+static int spin_global_readable(uintptr_t address, uint64_t n) {
+    if (guest_image_size && address>=guest_image_base && address+n<=guest_image_base+guest_image_size) return 1;
+    return runtime_memory_is_mapped(address,n);
+}
 
 typedef struct { int64_t sec, nsec; } GuestTimespec;
 typedef struct { int64_t sec, usec; } GuestTimeval;
@@ -183,7 +190,7 @@ static void maybe_force_wait_flag(uintptr_t caller) {
     static int forced;
     if (forced || getenv("GOW3_NO_FORCE_A")) return;
     if (caller!=SPIN_A_CALLER || spin_calls<20000) return;
-    if (!runtime_memory_is_mapped(SPIN_A_ADDR,sizeof(int32_t))) return;
+    if (!spin_global_readable(SPIN_A_ADDR,sizeof(int32_t))) return;
     volatile int32_t *flag_a=(volatile int32_t *)(uintptr_t)SPIN_A_ADDR;
     if (*flag_a==0) {
         *flag_a=1;
@@ -201,9 +208,9 @@ static void note_usleep_spin(uintptr_t caller) {
     ++shown;
     /* The spin waits on two image globals (image base 0x800104000): A = int at image+0x1f98c70,
      * B = byte at image+0x2a132e1. Printing them shows whether anything ever signals the wait. */
-    int val_a = runtime_memory_is_mapped(SPIN_A_ADDR, sizeof(int32_t))
+    int val_a = spin_global_readable(SPIN_A_ADDR, sizeof(int32_t))
         ? (int)*(volatile int32_t *)(uintptr_t)SPIN_A_ADDR : -1;
-    unsigned val_b = runtime_memory_is_mapped(0x802b172e1ULL, sizeof(uint8_t))
+    unsigned val_b = spin_global_readable(0x802b172e1ULL, sizeof(uint8_t))
         ? (unsigned)*(volatile uint8_t *)(uintptr_t)0x802b172e1ULL : 255u;
     fprintf(stderr,"Spin: usleep x%u thread=%llu caller=0x%lx A=%d B=%u\n",spin_calls,
             (unsigned long long)(uintptr_t)pthread_self(),

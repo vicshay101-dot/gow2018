@@ -63,6 +63,9 @@ typedef struct { uint64_t target, kind, value, addend; } Reloc;
 static char (*names)[128];
 static uint64_t import_count;
 static unsigned char *image;
+/* Guest image extent, for runtime code that must read image globals (spin/wait flags). */
+uintptr_t guest_image_base;
+uint64_t guest_image_size;
 static size_t page_size;
 typedef struct { uint64_t base, size, init, tls_address, tls_memsz, tls_filesz, tls_module; } LinkedModule;
 static LinkedModule modules[16];
@@ -1091,6 +1094,7 @@ int main(int argc, char **argv) {
     }
     if (!executable_entry) fail("entry is not executable");
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
+    guest_image_base=(uintptr_t)image; guest_image_size=size;
     printf("Image base: %p (guest rip - base = image offset)\n", (void *)image);
     {
         /* Dump of the loaded, relocated image: offsets in the file equal image offsets. */
