@@ -17,6 +17,7 @@ typedef struct Waiter {
 } Waiter;
 typedef struct Sema {
     uint32_t id, attr;
+    char name[32];
     int32_t count, initial, maximum;
     unsigned active;
     int deleted;
@@ -55,8 +56,9 @@ static ABI int32_t sem_create(uint32_t *out,const char *name,uint32_t attr,
     pthread_mutex_lock(&lock);
     if (next_id==UINT32_MAX) { pthread_mutex_unlock(&lock); free(s); return ERR(28); }
     s->id=next_id++; s->attr=attr; s->count=s->initial=initial; s->maximum=maximum;
+    snprintf(s->name,sizeof(s->name),"%s",name);
     s->next=registry; registry=s; *out=s->id; ++created;
-    printf("Runtime: semaphore id=%u, attr=%u, initial=%d, max=%d\n",s->id,attr,initial,maximum);
+    printf("Runtime: semaphore id=%u name=%s attr=%u, initial=%d, max=%d\n",s->id,s->name,attr,initial,maximum);
     pthread_mutex_unlock(&lock);
     return 0;
 }
@@ -72,7 +74,13 @@ static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) 
     else {
         /* Priority-ordered semaphores (attr 2) are served FIFO: there is no
            PS4 priority scheduler, host threads run at equal priority. */
-        if (getenv("GOW3_TRACE_SEMA")) fprintf(stderr,"Runtime: blocking wait on semaphore %u (need %d, count %d)\n",id,need,s->count); /* deadlock diagnosis */
+        /* Deadlock diagnosis: which semaphore a thread blocks on, with its name, and who (on by default;
+           GOW3_NO_TRACE_SEMA=1 turns it off). Capped so a long wait cannot flood the log. */
+        static int trace_state=-1; static unsigned trace_waits;
+        if (trace_state<0) trace_state=getenv("GOW3_NO_TRACE_SEMA")?0:1;
+        if (trace_state && trace_waits++<400)
+            fprintf(stderr,"Runtime: sema wait id=%u name=%s need=%d count=%d waiters=%u thread=%llu\n",
+                    id,s->name,need,s->count,s->active,(unsigned long long)(uintptr_t)pthread_self());
         Waiter w={.need=need};
         pthread_condattr_t attr;
         host_check(pthread_condattr_init(&attr));
