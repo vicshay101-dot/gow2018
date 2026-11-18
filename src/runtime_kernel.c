@@ -188,7 +188,7 @@ static void arm_wait_flag_watch(uintptr_t caller) { (void)caller; }
 #endif
 static void maybe_force_wait_flag(uintptr_t caller) {
     static int forced;
-    if (forced || getenv("GOW3_NO_FORCE_A")) return;
+    if (forced || !getenv("GOW3_FORCE_A")) return; /* opt-in: forcing A did not release the wait */
     if (caller!=SPIN_A_CALLER || spin_calls<20000) return;
     if (!spin_global_readable(SPIN_A_ADDR,sizeof(int32_t))) return;
     volatile int32_t *flag_a=(volatile int32_t *)(uintptr_t)SPIN_A_ADDR;
@@ -199,8 +199,65 @@ static void maybe_force_wait_flag(uintptr_t caller) {
                 (unsigned long long)SPIN_A_ADDR,spin_calls,(unsigned long)caller);
     }
 }
+/* One-shot diagnostic for the black screen: the main thread waits on A forever, and nothing the
+ * runtime implements writes it. Print every RIP-relative reference to A and B in the game image
+ * (the instructions that read or set them), plus the code around the polling loop, so the next
+ * log is enough to disassemble the wait and find which missing/incorrect service should release it.
+ * Lines start with "SpinXref"; GOW3_NO_SPIN_XREF=1 disables it. */
+static void spin_xref_scan_range(uintptr_t lo,uintptr_t hi,uintptr_t target,const char *label,unsigned *hits) {
+    static const unsigned tails[]={0,1,2,4};
+    for (uintptr_t a=lo+8;a+16<=hi && *hits<96;++a) {
+        int32_t disp; memcpy(&disp,(const void *)a,4);
+        for (unsigned t=0;t<4;++t) {
+            if (a+4+tails[t]+(intptr_t)disp!=target) continue;
+            const unsigned char *q=(const unsigned char *)a;
+            char hex[3*24+1]; int o=0;
+            for (int k=-8;k<16;++k) o+=snprintf(hex+o,sizeof(hex)-(size_t)o,"%02x ",q[k]);
+            fprintf(stderr,"SpinXref %s: disp@image+0x%llx tail=%u bytes[-8..+16]: %s\n",label,
+                    (unsigned long long)(a-guest_image_base),tails[t],hex);
+            ++*hits;
+        }
+    }
+}
+/* Scans only readable mappings inside the image: gaps between segments are no-access. */
+static void spin_xref_scan(uintptr_t target,const char *label) {
+    if (!guest_image_size || !guest_image_base) return;
+    uintptr_t ib=guest_image_base, ie=guest_image_base+guest_image_size;
+    FILE *maps=fopen("/proc/self/maps","r");
+    if (!maps) return;
+    char line[512],perm[5]; unsigned long lo,hi; unsigned hits=0;
+    while (fgets(line,sizeof(line),maps)) {
+        if (sscanf(line,"%lx-%lx %4s",&lo,&hi,perm)!=3 || perm[0]!='r') continue;
+        uintptr_t a=lo>ib ? lo : ib, e=hi<ie ? hi : ie;
+        if (a<e) spin_xref_scan_range(a,e,target,label,&hits);
+    }
+    fclose(maps);
+    fprintf(stderr,"SpinXref %s: %u reference(s) to 0x%llx (image+0x%llx)\n",label,hits,
+            (unsigned long long)target,(unsigned long long)(target-guest_image_base));
+}
+static void spin_dump_code(uintptr_t at,const char *label) {
+    if (!guest_image_size || at<guest_image_base+0x200 || at+0x80>guest_image_base+guest_image_size) return;
+    if (!runtime_memory_is_mapped(at-0x200,0x280) && !spin_global_readable(at-0x200,0x280)) return;
+    const unsigned char *p=(const unsigned char *)(at-0x200);
+    for (int line=0;line<(0x200+0x80)/32;++line) {
+        char hex[32*3+1]; int o=0;
+        for (int b=0;b<32;++b) o+=snprintf(hex+o,sizeof(hex)-(size_t)o,"%02x ",p[line*32+b]);
+        fprintf(stderr,"SpinXref code %s image+0x%llx: %s\n",label,
+                (unsigned long long)((uintptr_t)(p+line*32)-guest_image_base),hex);
+    }
+}
+static void spin_xref_once(uintptr_t caller) {
+    static int done;
+    if (done || caller!=SPIN_A_CALLER || spin_calls<2000) return;
+    done=1;
+    if (getenv("GOW3_NO_SPIN_XREF")) return;
+    spin_dump_code(caller,"wait-loop");
+    spin_xref_scan(SPIN_A_ADDR,"A");
+    spin_xref_scan(0x802b172e1ULL,"B");
+}
 static void note_usleep_spin(uintptr_t caller) {
     ++spin_calls;
+    spin_xref_once(caller);
     maybe_force_wait_flag(caller);
     if (spin_calls % 2000 != 0) return;
     static int shown;
@@ -431,6 +488,9 @@ static ABI int32_t posix_once(int32_t *once,void (ABI *routine)(void)) { return 
 typedef void (ABI *KeyDestructor)(void *);
 static struct { int used; KeyDestructor destructor; } keys[KEYS];
 static pthread_mutex_t key_lock=PTHREAD_MUTEX_INITIALIZER;
+/* Guest thread-specific values (scePthreadGetspecific/Setspecific). Restored from upstream:
+ * removing them left eoht7mQOCmo/+BzXYkqYeLE/PrdHuuDekhY unresolved (MISSING at startup). */
+static _Thread_local void *key_values[KEYS];
 static ABI int32_t key_create(uint32_t *key,KeyDestructor destructor) {
     if (!key) return ERR(22);
     pthread_mutex_lock(&key_lock);
@@ -442,9 +502,35 @@ static ABI int32_t key_create(uint32_t *key,KeyDestructor destructor) {
     pthread_mutex_unlock(&key_lock);
     return ERR(35);
 }
-/* Thread-exit key destructors were removed with the key-management cleanup (47a2e13a).
- * Kept as a no-op so runtime_thread.c, which still calls it on thread exit, keeps linking. */
-void runtime_thread_keys_cleanup(void) {}
+static ABI int32_t key_delete(uint32_t key) {
+    if (!key || key>=KEYS) return ERR(22);
+    pthread_mutex_lock(&key_lock);
+    int32_t r=keys[key].used ? 0 : ERR(22);
+    keys[key].used=0; keys[key].destructor=NULL;
+    pthread_mutex_unlock(&key_lock);
+    return r;
+}
+static ABI int32_t key_set(uint32_t key,void *value) {
+    if (!key || key>=KEYS || !keys[key].used) return ERR(22);
+    key_values[key]=value; return 0;
+}
+static ABI void *key_get(uint32_t key) { return key && key<KEYS ? key_values[key] : NULL; }
+void runtime_thread_keys_cleanup(void) {
+    for (int round=0;round<4;++round) {
+        int any=0;
+        for (uint32_t i=1;i<KEYS;++i) {
+            void *value=key_values[i];
+            if (!value || !keys[i].used || !keys[i].destructor) continue;
+            key_values[i]=NULL; any=1;
+            guest_cpu_call((uintptr_t)keys[i].destructor,1,
+                           (const uint64_t[]){ (uint64_t)(uintptr_t)value });
+        }
+        if (!any) break;
+    }
+}
+static ABI int32_t posix_key_create(uint32_t *k,KeyDestructor d) { int32_t r=key_create(k,d); return r ? r&0xffff : 0; }
+static ABI int32_t posix_key_delete(uint32_t k) { int32_t r=key_delete(k); return r ? r&0xffff : 0; }
+static ABI int32_t posix_key_set(uint32_t k,void *v) { int32_t r=key_set(k,v); return r ? r&0xffff : 0; }
 static void (ABI *thread_dtors)(void);
 static ABI int32_t kernel_set_thread_dtors(void (ABI *dtors)(void)) {
     thread_dtors=dtors;
@@ -497,7 +583,10 @@ static const RuntimeExport exports[]={
     {"sigfillset",guest_sigfillset}, {"sigemptyset",guest_sigemptyset},
     {"getrusage",guest_getrusage}, {"sysctl",guest_sysctl},
     {"scePthreadOnce",thread_once}, {"pthread_once",posix_once},
-    {"scePthreadKeyCreate",key_create},
+    {"scePthreadKeyCreate",key_create}, {"scePthreadKeyDelete",key_delete},
+    {"scePthreadSetspecific",key_set}, {"scePthreadGetspecific",key_get},
+    {"pthread_key_create",posix_key_create}, {"pthread_key_delete",posix_key_delete},
+    {"pthread_setspecific",posix_key_set}, {"pthread_getspecific",key_get},
     {"_sceKernelSetThreadDtors",kernel_set_thread_dtors},
     {"_sceKernelSetThreadAtexitCount",kernel_set_thread_atexit_count},
     {"_sceKernelSetThreadAtexitReport",kernel_set_thread_atexit_report},

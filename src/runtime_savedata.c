@@ -68,6 +68,8 @@ static char title_id[16]="UNKNOWN";
 static struct { int used; char host[700], meta[700]; } slots[SLOTS];
 static char memory_path[720];
 static uint64_t memory_size;
+static uint64_t memory_existed; /* file size found by the last setup (0 = just created) */
+static char memory_dir[640];
 static size_t mounts_done, memory_writes;
 
 void runtime_savedata_configure(const char *title) {
@@ -312,6 +314,9 @@ static ABI int32_t memory_setup(int32_t user, uint64_t size, const Param *param)
     int32_t r=ERR_INTERNAL;
     if (f) {
         fseek(f,0,SEEK_END);
+        long existed=ftell(f);
+        memory_existed=existed>0 ? (uint64_t)existed : 0;
+        snprintf(memory_dir,sizeof(memory_dir),"%s",dir);
         if ((uint64_t)ftell(f)<size && ftruncate(fileno(f),(off_t)size)) goto done;
         memory_size=size; r=0;
     done:
@@ -340,28 +345,43 @@ static int32_t memory_io(void *buffer, uint64_t size, int64_t offset, int write)
 static ABI int32_t memory_get(int32_t user, void *buffer, uint64_t size, int64_t offset) { (void)user; return memory_io(buffer,size,offset,0); }
 static ABI int32_t memory_set(int32_t user, void *buffer, uint64_t size, int64_t offset) { (void)user; return memory_io(buffer,size,offset,1); }
 
-/* SaveDataMemory2 wrappers over the single-slot memory above (slots are not separated). */
-typedef struct { void *buf; uint64_t size; int64_t offset; } MemData2;
+/* SaveDataMemory2 wrappers over the single-slot memory above (slots are not separated).
+ * Layouts follow OrbisSaveDataMemory*2 (shadPS4 savedata.cpp): MemoryData is 64 bytes, so the
+ * Set2 data array must be walked with that stride; Get2 also fills param/icon when asked. */
+typedef struct { void *buf; uint64_t size; int64_t offset; uint8_t reserved[40]; } MemData2;
+_Static_assert(sizeof(MemData2)==64,"OrbisSaveDataMemoryData layout");
 typedef struct { uint32_t option; int32_t user; uint64_t memory_size, icon_size; const Param *param; const void *icon; uint32_t slot; } Setup2;
-typedef struct { int32_t user; char pad[4]; MemData2 *data; void *param, *icon; uint32_t slot; } Get2;
+typedef struct { int32_t user; char pad[4]; MemData2 *data; Param *param; Icon *icon; uint32_t slot; } Get2;
 typedef struct { int32_t user; char pad[4]; const MemData2 *data; const Param *param; const void *icon; uint32_t data_num, slot; } Set2;
 static ABI int32_t memory_setup2(const Setup2 *p, uint64_t *result) {
     if (!p) return ERR_PARAMETER;
-    uint64_t before=memory_size;
     int32_t r=memory_setup(p->user,p->memory_size,p->param);
-    if (!r && result) { result[0]=before; result[1]=0; result[2]=0; }
+    /* OrbisSaveDataMemorySetupResult: existedMemorySize, reserved[16]. 0 tells the game the
+     * memory was just created; the old code always reported 0, even for an existing save. */
+    if (!r && result) { result[0]=memory_existed; result[1]=0; result[2]=0; }
+    printf("Runtime: SetupSaveDataMemory2 size=%llu existed=%llu -> %#x\n",
+           (unsigned long long)p->memory_size,(unsigned long long)memory_existed,(unsigned)r);
     return r;
 }
 static ABI int32_t memory_get2(const Get2 *p) {
-    if (!p || !p->data) return ERR_PARAMETER;
-    return memory_io(p->data->buf,p->data->size,p->data->offset,0);
+    if (!p) return ERR_PARAMETER;
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (!memory_size) return ERR_MEMORY_NOT_READY;
+    int32_t r=0;
+    if (p->data) r=memory_io(p->data->buf,p->data->size,p->data->offset,0);
+    if (!r && p->param) { memset(p->param,0,sizeof(*p->param)); if (memory_dir[0]) read_param(memory_dir,p->param); }
+    if (!r && p->icon) ((Icon *)p->icon)->data_size=0; /* no icon stored */
+    return r;
 }
 static ABI int32_t memory_set2(const Set2 *p) {
-    if (!p || !p->data) return ERR_PARAMETER;
-    for (uint32_t i=0;i<(p->data_num ? p->data_num : 1);++i) {
+    if (!p) return ERR_PARAMETER;
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (!memory_size) return ERR_MEMORY_NOT_READY;
+    if (p->data) for (uint32_t i=0;i<(p->data_num ? p->data_num : 1);++i) {
         int32_t r=memory_io(p->data[i].buf,p->data[i].size,p->data[i].offset,1);
         if (r) return r;
     }
+    if (p->param && memory_dir[0]) { pthread_mutex_lock(&lock); write_param(memory_dir,p->param); pthread_mutex_unlock(&lock); }
     return 0;
 }
 static ABI int32_t memory_sync(const void *p) { (void)p; return initialized ? 0 : ERR_NOT_INITIALIZED; } /* writes are direct */
