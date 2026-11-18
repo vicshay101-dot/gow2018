@@ -42,6 +42,10 @@ void Translator::EmitDataShare(const GcnInst& inst) {
         return DS_WRITE(32, false, true, true, inst);
     case Opcode::DS_ADD_RTN_U32:
         return DS_OP(inst, AtomicOp::Add, true);
+    case Opcode::DS_ORDERED_COUNT:
+        // Approximation: ordered count returns the previous counter value, like an atomic add.
+        // GDS wave ordering is not modelled; this keeps the shader translating instead of aborting.
+        return DS_OP(inst, AtomicOp::Add, true);
     case Opcode::DS_SUB_RTN_U32:
         return DS_OP(inst, AtomicOp::Sub, true);
     case Opcode::DS_MIN_RTN_U32:
