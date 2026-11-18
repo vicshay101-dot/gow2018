@@ -220,11 +220,23 @@ static void note_usleep_spin(uintptr_t caller) {
 }
 static ABI int32_t kernel_usleep(uint32_t usec) {
     uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
-    note_usleep_spin(caller); arm_wait_flag_watch(caller); sleep_ns((uint64_t)usec*1000); return 0;
+    note_usleep_spin(caller); arm_wait_flag_watch(caller);
+    uint64_t ns=(uint64_t)usec*1000;
+    if (caller==SPIN_A_CALLER && spin_calls>500) {
+        sched_yield();
+        if (ns<1000000ULL) ns=1000000ULL;
+    }
+    sleep_ns(ns); return 0;
 }
 static ABI int32_t posix_usleep(uint32_t usec) {
     uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
-    note_usleep_spin(caller); arm_wait_flag_watch(caller); sleep_ns((uint64_t)usec*1000); return 0;
+    note_usleep_spin(caller); arm_wait_flag_watch(caller);
+    uint64_t ns=(uint64_t)usec*1000;
+    if (caller==SPIN_A_CALLER && spin_calls>500) {
+        sched_yield();
+        if (ns<1000000ULL) ns=1000000ULL;
+    }
+    sleep_ns(ns); return 0;
 }
 static ABI uint32_t posix_sleep(uint32_t seconds) { sleep_ns((uint64_t)seconds*1000000000); return 0; }
 static ABI int32_t posix_nanosleep(const GuestTimespec *rq,GuestTimespec *rem) {
@@ -414,80 +426,4 @@ static ABI int32_t thread_once(int32_t *once,void (ABI *routine)(void)) {
         sched_yield();
     }
 }
-static ABI int32_t posix_once(int32_t *once,void (ABI *routine)(void)) { return thread_once(once,routine) ? 22 : 0; }
-#define KEYS 256
-typedef void (ABI *KeyDestructor)(void *);
-static struct { int used; KeyDestructor destructor; } keys[KEYS];
-static pthread_mutex_t key_lock=PTHREAD_MUTEX_INITIALIZER;
-static ABI int32_t key_create(uint32_t *key,KeyDestructor destructor) {
-    if (!key) return ERR(22);
-    pthread_mutex_lock(&key_lock);
-    for (uint32_t i=1;i<KEYS;++i) if (!keys[i].used) {
-        keys[i].used=1; keys[i].destructor=destructor;
-        pthread_mutex_unlock(&key_lock);
-        *key=i; return 0;
-    }
-    pthread_mutex_unlock(&key_lock);
-    return ERR(35);
-}
-/* Thread-exit key destructors were removed with the key-management cleanup (47a2e13a).
- * Kept as a no-op so runtime_thread.c, which still calls it on thread exit, keeps linking. */
-void runtime_thread_keys_cleanup(void) {}
-static void (ABI *thread_dtors)(void);
-static ABI int32_t kernel_set_thread_dtors(void (ABI *dtors)(void)) {
-    thread_dtors=dtors;
-    return 0;
-}
-
-/* ---- thread atexit counter (libc asks how many atexit handlers the thread registered) ----
- * _sceKernelSetThreadAtexitCount(int count): first pass records the value and reports success. */
-static int thread_atexit_count;
-static ABI int32_t kernel_set_thread_atexit_count(int32_t count) {
-    thread_atexit_count=count;
-    return 0;
-}
-/* ---- thread atexit report (libc reports the atexit state of the thread on exit) ----
- * _sceKernelSetThreadAtexitReport(void *report): first pass accepts the pointer and reports success. */
-static void *thread_atexit_report;
-static ABI int32_t kernel_set_thread_atexit_report(void *report) {
-    thread_atexit_report=report;
-    return 0;
-}
-#include "kernel_stubs.inc"
-static const RuntimeExport exports[]={
-#define KSTUB_ENTRIES
-#include "kernel_stubs.inc"
-#undef KSTUB_ENTRIES
-    {"sceKernelClockGettime",kernel_clock_gettime}, {"clock_gettime",posix_clock_gettime},
-    {"clock_getres",posix_clock_getres},
-    {"sceKernelGetProcessTime",process_time}, {"sceKernelGetProcessTimeCounter",process_time_counter},
-    {"sceKernelGetProcessTimeCounterFrequency",process_time_frequency},
-    {"sceKernelReadTsc",read_tsc}, {"sceKernelGetTscFrequency",tsc_frequency},
-    {"sceKernelUsleep",kernel_usleep}, {"usleep",posix_usleep}, {"sleep",posix_sleep},
-    {"nanosleep",posix_nanosleep}, {"sceKernelNanosleep",kernel_nanosleep},
-    {"sceKernelConvertUtcToLocaltime",kernel_utc_to_local}, {"sceKernelConvertLocaltimeToUtc",kernel_local_to_utc},
-    {"sceKernelGetModuleInfoForUnwind",kernel_module_info_unwind},
-    {"sceKernelInternalMemoryGetModuleSegmentInfo",kernel_module_segment_info},
-    {"sceKernelGettimezone",kernel_gettimezone}, {"gettimeofday",posix_gettimeofday},
-    {"sceKernelGettimeofday",kernel_gettimeofday},
-    {"time",posix_time},
-    {"getpagesize",get_pagesize}, {"getpid",get_pid}, {"sched_yield",yield},
-    {"_exit",hard_exit},
-    {"sceKernelDebugRaiseException",raise_exception},
-    {"sceKernelDebugRaiseExceptionOnReleaseMode",raise_exception},
-    {"sceKernelPrintBacktraceWithModuleInfo",print_backtrace},
-    {"getargc",get_argc}, {"getargv",get_argv}, {"sceKernelStopUnloadModule",stop_unload_module},
-    {"sceKernelGetModuleInfoFromAddr",module_info_from_addr}, {"sceKernelMlock",kernel_mlock},
-    {"__elf_phdr_match_addr",elf_phdr_match_addr}, {"_is_signal_return",is_signal_return},
-    {"__pthread_cxa_finalize",pthread_cxa_finalize}, {"sigreturn",unwind_resume},
-    {"__Ux86_64_setcontext",unwind_resume},
-    {"signal",guest_signal}, {"sigprocmask",guest_sigprocmask}, {"_sigprocmask",guest_sigprocmask},
-    {"sigfillset",guest_sigfillset}, {"sigemptyset",guest_sigemptyset},
-    {"getrusage",guest_getrusage}, {"sysctl",guest_sysctl},
-    {"scePthreadOnce",thread_once}, {"pthread_once",posix_once},
-    {"scePthreadKeyCreate",key_create},
-    {"_sceKernelSetThreadDtors",kernel_set_thread_dtors},
-    {"_sceKernelSetThreadAtexitCount",kernel_set_thread_atexit_count},
-    {"_sceKernelSetThreadAtexitReport",kernel_set_thread_atexit_report},
-};
-uintptr_t runtime_kernel_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
+static ABI int32_t posix_once(int32_t *once,void (ABI *routine)(void)) { return thread_once(once,routine
