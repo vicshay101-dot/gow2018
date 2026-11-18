@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "shader_recompiler/ir/passes/ir_passes.h"
 #include "shader_recompiler/ir/passes/resource_pass.h"
 #include "shader_recompiler/ir/program.h"
@@ -254,7 +255,16 @@ void MarkReadConstBufferSharpSources(const SharpReference& sharp) {
         if (!source) {
             continue;
         }
-        ASSERT(IsSharpSource(source));
+        if (!IsSharpSource(source)) {
+            // A V# dword produced by an instruction this pass does not model. Skip it instead of
+            // aborting the emulator; the flatten pass reports the sharp if it cannot be walked.
+            static unsigned unsupported_sources;
+            if (unsupported_sources++ < 20) {
+                LOG_WARNING(Render_Recompiler, "Skipping sharp source from unsupported opcode {}",
+                            static_cast<u32>(source->GetOpcode()));
+            }
+            continue;
+        }
         if (source->GetOpcode() == IR::Opcode::ReadConstBuffer) {
             auto flags = source->Flags<IR::BufferInstInfo>();
             flags.sharp_source.Assign(1u);
