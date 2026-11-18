@@ -366,6 +366,22 @@ static void drop_range(uintptr_t start, uintptr_t end) {
     vma_erase(i,n);
 }
 /* Places a host mapping; with MAP_FIXED it replaces what the guest had there. */
+#ifndef _WIN32
+/* Host-chosen placement for a reservation that has no free host range at its guest address.
+   The kernel picks the spot (top-down, below the guest-usable limit); the size is halved until it fits. */
+static uintptr_t reserve_on_host(uint64_t *size) {
+    for (uint64_t want=*size & ~(uint64_t)(PAGE-1); want>=UINT64_C(0x40000000); want=(want/2) & ~(uint64_t)(PAGE-1)) {
+        void *p=mmap(NULL,want,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0);
+        if (p==MAP_FAILED) continue;
+        uintptr_t a=(uintptr_t)p;
+        if (a>=USER_MIN && a+want<=HOST_VA_TOP) { *size=want; return a; }
+        munmap(p,want);
+    }
+    return 0;
+}
+#else
+static uintptr_t reserve_on_host(uint64_t *size) { (void)size; return 0; }
+#endif
 static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t alignment,
                      int kind, int type, uint64_t phys) {
     uintptr_t address=(uintptr_t)*inout;
@@ -393,23 +409,36 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
                 (void *)address,size,phys,kind,host_errno,strerror(host_errno));
         fflush(stderr);
         if (kind==KIND_RESERVED) {
-            if (size>UINT64_C(0x40000000)) return NO_MEMORY;
-        } else if (!(flags & MAP_FIXED_FLAG)) return NO_MEMORY;
-        uintptr_t moved=0, from=USER_MIN;
-        for (int attempt=0; attempt<64; ++attempt) {
-            moved=find_free(from,size,alignment);
-            if (!moved) break;
-            if (!host_map(moved,size,host_prot(prot),kind==KIND_RESERVED,phys)) break;
-            from=moved+size; moved=0;
-        }
-        if (!moved) {
-            fprintf(stderr,"Runtime: relocation of %s %p FAILED (errno=%d)\n",kind==KIND_RESERVED?"reservation":"fixed map",(void *)address,errno);
+            /* Reservations only need some free host range. Their guest address is handed back, so let the
+               kernel choose one instead of walking the guest VMA table, which does not know host mappings. */
+            uint64_t placed_size=size;
+            uintptr_t picked=reserve_on_host(&placed_size);
+            if (!picked) {
+                fprintf(stderr,"Runtime: no host range for reservation %p size=%" PRIu64 "\n",(void *)address,size);
+                fflush(stderr);
+                return NO_MEMORY;
+            }
+            fprintf(stderr,"Runtime: reservation %p placed at %p (size=%" PRIu64 ")\n",(void *)address,(void *)picked,placed_size);
             fflush(stderr);
-            return NO_MEMORY;
+            address=picked; size=placed_size;
+        } else {
+            if (!(flags & MAP_FIXED_FLAG)) return NO_MEMORY;
+            uintptr_t moved=0, from=USER_MIN;
+            for (int attempt=0; attempt<64; ++attempt) {
+                moved=find_free(from,size,alignment);
+                if (!moved) break;
+                if (!host_map(moved,size,host_prot(prot),0,phys)) break;
+                from=moved+size; moved=0;
+            }
+            if (!moved) {
+                fprintf(stderr,"Runtime: relocation of fixed map %p FAILED (errno=%d)\n",(void *)address,errno);
+                fflush(stderr);
+                return NO_MEMORY;
+            }
+            fprintf(stderr,"Runtime: fixed map %p relocated to %p (size=%" PRIu64 ")\n",(void *)address,(void *)moved,size);
+            fflush(stderr);
+            address=moved;
         }
-        fprintf(stderr,"Runtime: %s %p relocated to %p (size=%" PRIu64 ")\n",kind==KIND_RESERVED?"reservation":"fixed map",(void *)address,(void *)moved,size);
-        fflush(stderr);
-        address=moved;
     }
     if (overlaps(address,address+size,1)) {
         for (size_t i=vma_index(address); i<vma_count && vmas[i].start<address+size; ++i)
