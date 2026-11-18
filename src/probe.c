@@ -843,6 +843,7 @@ int main(int argc, char **argv) {
     struct sigaction sa = {0}; sa.sa_sigaction = fault; sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, NULL); sigaction(SIGILL, &sa, NULL); sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGTRAP, &sa, NULL); /* int 0x41 may surface as a trap when left in place */
     Dl_info self_info;
     if (dladdr((void *)main,&self_info)) exe_base=(uintptr_t)self_info.dli_fbase;
     struct sigaction dump = {0}; dump.sa_sigaction = thread_dump; dump.sa_flags = SA_SIGINFO|SA_RESTART;
@@ -1066,6 +1067,12 @@ int main(int argc, char **argv) {
          * Replaced by two NOPs at: image offset 0x32a4f7 (seen crashing), plus every offset listed (hex,
          * one per line) in /sdcard/Download/gow2018_int41_offsets.txt (made by scan_int41.py). Only
          * bytes that are exactly cd 41 are touched. */
+        /* Diagnostic switch: an empty file /sdcard/Download/gow2018_keep_int41 leaves every int 0x41 in place,
+         * so the first assertion that fails stops the game and the guest fault report prints its offset. */
+        FILE *keep = fopen("/sdcard/Download/gow2018_keep_int41", "r");
+        if (keep) { fclose(keep);
+            printf("INT 0x41 patch: disabled by gow2018_keep_int41 (first failing assertion will stop the game)\n");
+        } else {
         uint64_t done = 0, skipped = 0;
         uint64_t offs[4096]; size_t no = 0;
         offs[no++] = 0x32a4f7;
@@ -1084,6 +1091,7 @@ int main(int argc, char **argv) {
             } else ++skipped;
         }
         printf("INT 0x41 patch: %" PRIu64 " site(s) replaced by NOPs, %" PRIu64 " skipped\n", done, skipped);
+        }
     }
     protect(image, round_page(size), 0);
     int executable_entry = 0;
