@@ -21,6 +21,20 @@ static uint64_t capabilities;
 static _Atomic size_t guards_acquired, guards_released;
 static uint64_t stack_canary;
 static _Atomic size_t memory_calls;
+static _Atomic uint64_t copy_bytes_total, copy_bytes_large, copy_calls_large;
+/* Bytes moved by guest memset/memcpy/memmove: total, and the part in copies of 64 KiB or more. */
+static inline void note_guest_copy(size_t size) {
+    atomic_fetch_add_explicit(&copy_bytes_total,(uint64_t)size,memory_order_relaxed);
+    if (size>=65536) {
+        atomic_fetch_add_explicit(&copy_bytes_large,(uint64_t)size,memory_order_relaxed);
+        atomic_fetch_add_explicit(&copy_calls_large,1,memory_order_relaxed);
+    }
+}
+void runtime_copy_stats_take(uint64_t *total, uint64_t *large, uint64_t *calls_large) {
+    *total=atomic_exchange_explicit(&copy_bytes_total,0,memory_order_relaxed);
+    *large=atomic_exchange_explicit(&copy_bytes_large,0,memory_order_relaxed);
+    *calls_large=atomic_exchange_explicit(&copy_calls_large,0,memory_order_relaxed);
+}
 /* Dynamic TLS of linked modules: module IDs 2..7 (1 is the eboot's static TLS). */
 #define TLS_MODULES 8
 static struct { const void *data; uint64_t filesz, memsz; } tls_modules[TLS_MODULES];
@@ -165,12 +179,15 @@ static ABI __attribute__((noreturn)) void stack_fail(void) {
     exit(22);
 }
 static ABI void *guest_memset(void *dst, int value, size_t size) {
+    note_guest_copy(size);
     atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memset(dst, value, size);
 }
 static ABI void *guest_memcpy(void *dst, const void *src, size_t size) {
+    note_guest_copy(size);
     atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memcpy(dst, src, size);
 }
 static ABI void *guest_memmove(void *dst, const void *src, size_t size) {
+    note_guest_copy(size);
     atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memmove(dst, src, size);
 }
 static ABI int guest_memcmp(const void *a, const void *b, size_t size) {
