@@ -290,7 +290,37 @@ static void spin_xref_once(uintptr_t caller) {
     spin_xref_scan(SPIN_A_ADDR,"A");
     spin_xref_scan(SPIN_B_ADDR,"B");
 }
+static uintptr_t prof_image_lo;
+static struct { uintptr_t key; uint64_t n; } usleep_callers[256];
+static void usleep_caller_note(uintptr_t caller) {
+    uint32_t h=(uint32_t)((caller>>2)*2654435761u)&255u;
+    for (int i=0;i<256;++i) {
+        uint32_t k=(h+i)&255u;
+        if (usleep_callers[k].key==caller) { __atomic_fetch_add(&usleep_callers[k].n,1,__ATOMIC_RELAXED); return; }
+        if (usleep_callers[k].key==0) {
+            uintptr_t expected=0;
+            if (__atomic_compare_exchange_n(&usleep_callers[k].key,&expected,caller,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED)
+                || usleep_callers[k].key==caller) {
+                __atomic_fetch_add(&usleep_callers[k].n,1,__ATOMIC_RELAXED); return;
+            }
+        }
+    }
+}
+static void usleep_caller_report(void) {
+    for (int round=0; round<3; ++round) {
+        int best=-1; uint64_t bn=0;
+        for (int k=0;k<256;++k) {
+            uint64_t n=__atomic_load_n(&usleep_callers[k].n,__ATOMIC_RELAXED);
+            if (n>bn) { bn=n; best=k; }
+        }
+        if (best<0 || bn<100) break;
+        uintptr_t key=usleep_callers[best].key;
+        __atomic_store_n(&usleep_callers[best].n,0,__ATOMIC_RELAXED);
+        fprintf(stderr,"  usleep caller image+0x%llx: %llu calls\n",(unsigned long long)(key-prof_image_lo),(unsigned long long)bn);
+    }
+}
 static void note_usleep_spin(uintptr_t caller) {
+    usleep_caller_note(caller);
     ++spin_calls;
     watch_t_poll(caller);
     spin_xref_once(caller);
@@ -316,6 +346,13 @@ static int spin_throttle_enabled(void) {
     if (v<0) { const char *e=getenv("GOW3_SPIN_THROTTLE"); v=(e && e[0]=='1'); }
     return v;
 }
+/* Generic throttle for short guest sleeps (polling loops). On when /sdcard/Download/gow2018_spin_throttle exists.
+ * Sleeps shorter than 200 us are lengthened to 200 us and yield the CPU first. */
+static int spin_short_sleep_throttle(void) {
+    static int v=-1;
+    if (v<0) { FILE *f=fopen("/sdcard/Download/gow2018_spin_throttle","r"); v=f!=NULL; if (f) fclose(f); }
+    return v;
+}
 static ABI int32_t kernel_usleep(uint32_t usec) {
     uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
     note_usleep_spin(caller); arm_wait_flag_watch(caller);
@@ -326,6 +363,10 @@ static ABI int32_t kernel_usleep(uint32_t usec) {
     if (caller==SPIN_A_CALLER && spin_calls>500 && spin_throttle_enabled()) {
         sched_yield();
         if (ns<1000000ULL) ns=1000000ULL;
+    }
+    if (spin_short_sleep_throttle() && ns<200000ULL) {
+        sched_yield();
+        ns=200000ULL;
     }
     sleep_ns(ns); return 0;
 }
@@ -339,6 +380,10 @@ static ABI int32_t posix_usleep(uint32_t usec) {
     if (caller==SPIN_A_CALLER && spin_calls>500 && spin_throttle_enabled()) {
         sched_yield();
         if (ns<1000000ULL) ns=1000000ULL;
+    }
+    if (spin_short_sleep_throttle() && ns<200000ULL) {
+        sched_yield();
+        ns=200000ULL;
     }
     sleep_ns(ns); return 0;
 }
@@ -743,6 +788,7 @@ static void *prof_report(void *arg) {
             ++shown;
         }
         (void)shown;
+        usleep_caller_report();
     }
     return NULL;
 }
