@@ -780,6 +780,13 @@ static ABI int32_t batch_map2(BatchEntry *entries, int count, int *processed, in
         default: result=INVALID;
         }
         if (result) break;
+        /* A batch can hold more map operations than the 64-slot hook queue; drain it as it fills instead of
+         * letting queue_hook overflow (STOP: GPU hook queue overflow after 296 frames). */
+        if (pending_count + 8 >= sizeof(pending)/sizeof(*pending)) {
+            write_unlock();
+            flush_hooks();
+            write_lock();
+        }
     }
     write_unlock();
     flush_hooks();
