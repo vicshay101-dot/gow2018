@@ -165,13 +165,19 @@ static void arm_wait_flag_watch(uintptr_t caller) {
             fprintf(stderr,"GOW3_WATCH_A: armed page=%p original_prot=%d arms=%u\n",(void*)watch_a_page,watch_a_original_prot,arms);
     }
 }
-/* One-shot write watch on the guest word that a 32-bit load reads as a pointer (r14+0x18 in af6bd4..39fad7
- * logs: the value 0x8024b1d08 is stored there as 64 bits and read back as 0x024b1d08). Protects the page
- * once it is mapped; the first write faults, logs the writer's guest rip, restores protection and retries. */
-static uintptr_t watch_t_addr=0x10530068d8ULL, watch_t_page; static size_t watch_t_pagesize;
-static int watch_t_prot, watch_t_armed, watch_t_on=-1;
+/* Read-only monitor of the guest word the crashing load reads as a pointer (r14+0x18 = 0x10530068d8, same in
+ * every run). Nothing is protected: each usleep of the spin loop reads the word (only once it is mapped) and
+ * logs every change with the spinning thread and its caller. Enabled by the empty file
+ * /sdcard/Download/gow2018_watch_on; the address can be overridden with /sdcard/Download/gow2018_watch_addr. */
+static uintptr_t watch_t_addr=0x10530068d8ULL;
+static int watch_t_on=-1;
+static uint64_t watch_t_last; static int watch_t_have; static unsigned watch_t_changes;
 static void watch_t_init(void) {
     if (watch_t_on>=0) return;
+    watch_t_on=0;
+    FILE *on=fopen("/sdcard/Download/gow2018_watch_on","r");
+    if (!on) return;
+    fclose(on);
     watch_t_on=1;
     FILE *f=fopen("/sdcard/Download/gow2018_watch_addr","r");
     if (f) {
@@ -179,37 +185,21 @@ static void watch_t_init(void) {
         if (fscanf(f,"%llx",&v)==1 && v) watch_t_addr=(uintptr_t)v;
         fclose(f);
     }
-    FILE *off=fopen("/sdcard/Download/gow2018_watch_off","r");
-    if (off) { fclose(off); watch_t_on=0; }
 }
-void runtime_watch_target_mapped(uintptr_t address,uint64_t size) {
+static void watch_t_poll(uintptr_t caller) {
+    static unsigned polls;
     watch_t_init();
-    if (!watch_t_on || watch_t_armed) return;
-    if (watch_t_addr<address || watch_t_addr>=address+size) return;
-    long ps=sysconf(_SC_PAGESIZE);
-    if (ps<=0) return;
-    int hp=0;
-    if (!watch_a_find_protection(watch_t_addr,&hp) || !(hp&PROT_WRITE)) return;
-    watch_t_pagesize=(size_t)ps; watch_t_page=watch_t_addr&~(uintptr_t)(ps-1);
-    if (mprotect((void*)watch_t_page,watch_t_pagesize,hp&~PROT_WRITE)==0) {
-        watch_t_prot=hp; watch_t_armed=1;
-        fprintf(stderr,"GOW3_WATCH_T: armed page=%p target=%#llx\n",(void*)watch_t_page,(unsigned long long)watch_t_addr);
-    }
-}
-static int watch_t_handle_fault(int sig,siginfo_t *info,void *context) {
-    if (sig!=SIGSEGV || !info || !watch_t_armed) return 0;
-    if ((((uintptr_t)info->si_addr)&~(uintptr_t)(watch_t_pagesize-1))!=watch_t_page) return 0;
-    GuestRegs regs={0};
-    int guest=guest_cpu_signal_regs(context,&regs);
-    fprintf(stderr,"GOW3_WATCH_T: write addr=%p (target %#llx) guest=%d rip=%#llx image_off=%#llx\n",
-        info->si_addr,(unsigned long long)watch_t_addr,guest,(unsigned long long)regs.rip,
-        (unsigned long long)(regs.rip>=0x800104000ULL?regs.rip-0x800104000ULL:0));
-    if (mprotect((void*)watch_t_page,watch_t_pagesize,watch_t_prot)!=0) return 0;
-    watch_t_armed=0;
-    return 1;
+    if (!watch_t_on || (++polls % 64) != 0) return;
+    if (!spin_global_readable(watch_t_addr, sizeof(uint64_t))) return;
+    uint64_t v=*(volatile uint64_t *)(uintptr_t)watch_t_addr;
+    if (watch_t_have && v==watch_t_last) return;
+    if (watch_t_changes++ < 50)
+        fprintf(stderr,"GOW3_WATCH_T: %#llx: %#llx -> %#llx spin_calls=%u thread=%llu caller=%#lx\n",
+            (unsigned long long)watch_t_addr,(unsigned long long)(watch_t_have?watch_t_last:0),
+            (unsigned long long)v,spin_calls,(unsigned long long)(uintptr_t)pthread_self(),(unsigned long)caller);
+    watch_t_last=v; watch_t_have=1;
 }
 int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context) {
-    if (watch_t_handle_fault(sig,info,context)) return 1;
     if (sig!=SIGSEGV || !info || !watch_a_armed ||
         (((uintptr_t)info->si_addr)&~(uintptr_t)(watch_a_page_size-1))!=watch_a_page) return 0;
     GuestRegs regs={0};
@@ -229,7 +219,6 @@ int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context) {
 }
 #else
 static void arm_wait_flag_watch(uintptr_t caller) { (void)caller; }
-void runtime_watch_target_mapped(uintptr_t address,uint64_t size) { (void)address; (void)size; }
 #endif
 static void maybe_force_wait_flag(uintptr_t caller) {
     static int forced;
@@ -302,6 +291,7 @@ static void spin_xref_once(uintptr_t caller) {
 }
 static void note_usleep_spin(uintptr_t caller) {
     ++spin_calls;
+    watch_t_poll(caller);
     spin_xref_once(caller);
     maybe_force_wait_flag(caller);
     if (spin_calls % 2000 != 0) return;

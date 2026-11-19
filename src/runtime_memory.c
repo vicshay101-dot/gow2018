@@ -8,7 +8,6 @@
  * encode 40-bit addresses, so host-default 0x7f... addresses would not fit. */
 #define _GNU_SOURCE
 #include "runtime.h"
-void runtime_watch_target_mapped(uintptr_t address,uint64_t size);
 #include "guest_cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -482,7 +481,6 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
     if (vma_insert(vma_index(address),v)) return NO_MEMORY;
     if (kind==KIND_FLEXIBLE) flexible_bytes+=size;
     if (kind!=KIND_RESERVED) queue_hook(HOOK_MAP,address,size);
-    runtime_watch_target_mapped(address,size);
     *inout=(void *)address;
     return 0;
 }
