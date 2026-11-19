@@ -1093,6 +1093,23 @@ int main(int argc, char **argv) {
         printf("INT 0x41 patch: %" PRIu64 " site(s) replaced by NOPs, %" PRIu64 " skipped\n", done, skipped);
         }
     }
+    {
+        /* Load-width fix at the crashing site (image+0x385621, the AK::IOThread wait): `movslq 0x18(%r14),%r12`
+         * reads only the low 32 bits of a 64-bit guest pointer stored in that field, so r12 becomes 0x024b1d08
+         * instead of 0x8024b1d08 and the next access faults (signal 11, game stopped 139). `63` (movslq) is
+         * replaced by `8b` (mov r64), the same length and operands. Only applied when the bytes match exactly.
+         * An empty file /sdcard/Download/gow2018_no_movq_fix disables it. */
+        static const uint64_t movq_site = 0x385621;
+        static const unsigned char movslq_old[4] = {0x4d, 0x63, 0x66, 0x18};
+        FILE *nf = fopen("/sdcard/Download/gow2018_no_movq_fix", "r");
+        if (nf) { fclose(nf); printf("Load fix: disabled by gow2018_no_movq_fix\n"); }
+        else if (movq_site + 4 <= size && memcmp(image + movq_site, movslq_old, 4) == 0) {
+            image[movq_site + 1] = 0x8b;
+            printf("Load fix: movslq -> mov r64 at image offset 0x%llx\n", (unsigned long long)movq_site);
+        } else {
+            printf("Load fix: bytes at image offset 0x%llx do not match, not applied\n", (unsigned long long)movq_site);
+        }
+    }
     protect(image, round_page(size), 0);
     int executable_entry = 0;
     for (uint64_t i = 0; i < ns; ++i) {
