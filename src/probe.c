@@ -95,6 +95,35 @@ static void *allocate(size_t size) {
 #endif
     return p;
 }
+/* The PS4 loads the main executable at 0x400000 (shadPS4: ExecutableLoadBase in core/module.cpp), and
+ * GoW 2018 relies on it: it keeps pointers to its own image globals in 32-bit fields and reads them back
+ * sign-extended (e.g. `movslq 0x18(%r14),%r12` in the Wwise AK::IOThread at image+0x385621). With the image
+ * at 0x800104000 those pointers lose bit 35 and the thread faults (signal 11), freezing the game. Map the
+ * image there when the address is free; fall back to the old placement otherwise. An empty file
+ * /sdcard/Download/gow2018_high_image (or GOW3_HIGH_IMAGE=1) restores the old placement. */
+#define PS4_EXECUTABLE_BASE UINT64_C(0x400000)
+static void *allocate_image(size_t size) {
+#ifndef _WIN32
+    const char *env=getenv("GOW3_HIGH_IMAGE");
+    FILE *opt=fopen("/sdcard/Download/gow2018_high_image","r");
+    if (opt) fclose(opt);
+    if (opt || (env && *env && strcmp(env,"0"))) {
+        printf("Image placement: PS4 base 0x400000 disabled by %s\n", opt ? "gow2018_high_image" : "GOW3_HIGH_IMAGE");
+    } else if (PS4_EXECUTABLE_BASE+size<=UINT64_C(0x80000000)) {
+        void *want=(void *)(uintptr_t)PS4_EXECUTABLE_BASE;
+#ifdef MAP_FIXED_NOREPLACE
+        void *p=mmap(want,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+#else
+        void *p=mmap(want,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+#endif
+        if (p==want) { printf("Image placement: PS4 executable base 0x400000\n"); return p; }
+        int err=errno;
+        if (p!=MAP_FAILED) munmap(p,size); /* kernels without MAP_FIXED_NOREPLACE treat it as a hint */
+        printf("Image placement: 0x400000 unavailable (errno=%d), using the guest low area\n", p==MAP_FAILED ? err : 0);
+    }
+#endif
+    return allocate(size);
+}
 static void protect(void *p, size_t size, unsigned flags) {
 #ifdef _WIN32
     DWORD old, mode = PAGE_NOACCESS;
@@ -950,7 +979,7 @@ int main(int argc, char **argv) {
             if (!executable) fail("native function is not executable");
         }
     }
-    image = allocate(round_page(size));
+    image = allocate_image(round_page(size));
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
     if (!cpu_only) {
@@ -1103,6 +1132,10 @@ int main(int argc, char **argv) {
         static const unsigned char movslq_old[4] = {0x4d, 0x63, 0x66, 0x18};
         FILE *nf = fopen("/sdcard/Download/gow2018_no_movq_fix", "r");
         if (nf) { fclose(nf); printf("Load fix: disabled by gow2018_no_movq_fix\n"); }
+        else if ((uintptr_t)image+size<=UINT64_C(0x80000000)) {
+            /* Image below 2 GiB (PS4 base): the original sign-extended 32-bit load is correct. */
+            printf("Load fix: not needed, image is below 2 GiB\n");
+        }
         else if (movq_site + 4 <= size && memcmp(image + movq_site, movslq_old, 4) == 0) {
             image[movq_site + 1] = 0x8b;
             printf("Load fix: movslq -> mov r64 at image offset 0x%llx\n", (unsigned long long)movq_site);

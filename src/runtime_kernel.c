@@ -122,8 +122,9 @@ static int sleep_ns(uint64_t ns) {
 static __thread unsigned spin_calls;
 /* The main thread polls the global A (image+0x1f98c70, int) from the loop whose usleep call
  * returns to image+0x2d114a. After 20000 polls on that loop, set A=1 once unless GOW3_NO_FORCE_A=1. */
-#define SPIN_A_ADDR 0x80209cc70ULL
-#define SPIN_A_CALLER 0x8003d514aULL
+#define SPIN_A_ADDR ((uint64_t)guest_image_base+0x1f98c70ULL)
+#define SPIN_A_CALLER ((uint64_t)guest_image_base+0x2d114aULL)
+#define SPIN_B_ADDR ((uint64_t)guest_image_base+0x2a132e1ULL)
 #ifndef _WIN32
 static volatile sig_atomic_t watch_a_armed;
 static uintptr_t watch_a_page;
@@ -207,9 +208,9 @@ int runtime_watch_handle_fault(int sig,siginfo_t *info,void *context) {
     uintptr_t hostpc=guest_cpu_host_pc(context);
     fprintf(stderr,"GOW3_WATCH_A: page write addr=%p guest=%d rip=%#llx image_off=%#llx hostpc=%p A=%d B=%u tid=%ld\n",
         info->si_addr,guest,(unsigned long long)regs.rip,
-        (unsigned long long)(regs.rip>=0x800104000ULL?regs.rip-0x800104000ULL:0),
+        (unsigned long long)(regs.rip>=guest_image_base?regs.rip-guest_image_base:0),
         (void*)hostpc,(int)*(volatile int32_t*)(uintptr_t)SPIN_A_ADDR,
-        (unsigned)*(volatile uint8_t*)(uintptr_t)0x802b172e1ULL,(long)(uintptr_t)pthread_self());
+        (unsigned)*(volatile uint8_t*)(uintptr_t)SPIN_B_ADDR,(long)(uintptr_t)pthread_self());
     if (mprotect((void*)watch_a_page,watch_a_page_size,watch_a_original_prot)!=0) {
         fprintf(stderr,"GOW3_WATCH_A: failed to restore page protection errno=%d\n",errno);
         return 0;
@@ -287,7 +288,7 @@ static void spin_xref_once(uintptr_t caller) {
     if (getenv("GOW3_NO_SPIN_XREF")) return;
     spin_dump_code(caller,"wait-loop");
     spin_xref_scan(SPIN_A_ADDR,"A");
-    spin_xref_scan(0x802b172e1ULL,"B");
+    spin_xref_scan(SPIN_B_ADDR,"B");
 }
 static void note_usleep_spin(uintptr_t caller) {
     ++spin_calls;
@@ -298,12 +299,12 @@ static void note_usleep_spin(uintptr_t caller) {
     static int shown;
     if (shown >= 80) return;
     ++shown;
-    /* The spin waits on two image globals (image base 0x800104000): A = int at image+0x1f98c70,
+    /* The spin waits on two image globals (image-relative): A = int at image+0x1f98c70,
      * B = byte at image+0x2a132e1. Printing them shows whether anything ever signals the wait. */
     int val_a = spin_global_readable(SPIN_A_ADDR, sizeof(int32_t))
         ? (int)*(volatile int32_t *)(uintptr_t)SPIN_A_ADDR : -1;
-    unsigned val_b = spin_global_readable(0x802b172e1ULL, sizeof(uint8_t))
-        ? (unsigned)*(volatile uint8_t *)(uintptr_t)0x802b172e1ULL : 255u;
+    unsigned val_b = spin_global_readable(SPIN_B_ADDR, sizeof(uint8_t))
+        ? (unsigned)*(volatile uint8_t *)(uintptr_t)SPIN_B_ADDR : 255u;
     fprintf(stderr,"Spin: usleep x%u thread=%llu caller=0x%lx A=%d B=%u\n",spin_calls,
             (unsigned long long)(uintptr_t)pthread_self(),
             (unsigned long)caller,
