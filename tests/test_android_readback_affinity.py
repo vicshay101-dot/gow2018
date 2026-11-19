@@ -10,10 +10,10 @@ class ReadbackAffinityTests(unittest.TestCase):
         start = code.index("void Scheduler::SubmitExecution(SubmitInfo& info)")
         end = code.index("\nvoid Scheduler::PriorityPendingOpsThread", start)
         submit = code[start:end]
-        self.assertIn("MaxAndroidInFlightSubmissions = 8", submit)
+        self.assertIn("max_android_in_flight = [] {", submit)
         self.assertIn('std::getenv("GOW3_ANDROID_PORT")', submit)
         self.assertIn('std::getenv("GOW3_VK_POLL_EACH_SUBMIT")', submit)
-        self.assertIn("work_semaphore.Wait(signal_value - MaxAndroidInFlightSubmissions)", submit)
+        self.assertIn("work_semaphore.Wait(signal_value - max_android_in_flight)", submit)
         self.assertIn("if (!bounded_submit) {\n        work_semaphore.Refresh();", submit)
         self.assertEqual(submit.count("work_semaphore.Refresh();"), 1)
         self.assertIn("PopPendingOperations();", submit)
