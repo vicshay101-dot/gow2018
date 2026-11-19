@@ -659,6 +659,7 @@ enum { PROF_GUEST=0, PROF_JIT=1, PROF_LIB=2, PROF_OTHER=3 };
 static ProfMap prof_maps[PROF_MAX_MAPS]; static int prof_nmaps;
 static volatile uint64_t prof_hits[PROF_MAX_MAPS];
 static volatile uint64_t prof_samples;
+static volatile uint64_t prof_guest_hits;
 static volatile uint32_t prof_pages[PROF_IMAGE_PAGES];
 static uintptr_t prof_image_lo, prof_image_hi;
 static int prof_on;
@@ -694,6 +695,14 @@ static void prof_handler(int sig, siginfo_t *info, void *ctx) {
     uintptr_t pc=0;
 #endif
     __atomic_fetch_add(&prof_samples,1,__ATOMIC_RELAXED);
+    /* Guest code is recognised by address, not by mapping name: the image can sit inside a mapping that is
+     * reported under another name (the probe ELF at 0x400000). */
+    if (pc>=prof_image_lo && pc<prof_image_hi) {
+        __atomic_fetch_add(&prof_guest_hits,1,__ATOMIC_RELAXED);
+        uintptr_t page=(pc-prof_image_lo)>>12;
+        if (page<PROF_IMAGE_PAGES) __atomic_fetch_add(&prof_pages[page],1,__ATOMIC_RELAXED);
+        return;
+    }
     for (int i=0;i<prof_nmaps;++i) {
         if (pc>=prof_maps[i].lo && pc<prof_maps[i].hi) {
             __atomic_fetch_add(&prof_hits[i],1,__ATOMIC_RELAXED);
@@ -712,10 +721,11 @@ static void *prof_report(void *arg) {
         uint64_t total=__atomic_exchange_n(&prof_samples,0,__ATOMIC_RELAXED);
         if (!total) continue;
         uint64_t kinds[4]={0,0,0,0};
+        kinds[PROF_GUEST]=__atomic_exchange_n(&prof_guest_hits,0,__ATOMIC_RELAXED);
         fprintf(stderr,"PROFILE 5s: %llu samples\n",(unsigned long long)total);
         for (int i=0;i<prof_nmaps;++i) {
             uint64_t h=__atomic_exchange_n(&prof_hits[i],0,__ATOMIC_RELAXED);
-            kinds[prof_maps[i].kind]+=h;
+            if (prof_maps[i].kind!=PROF_GUEST) kinds[prof_maps[i].kind]+=h;
             if (h*200>=total) fprintf(stderr,"  %5.1f%%  %s\n",100.0*h/total,prof_maps[i].name);
         }
         fprintf(stderr,"  by kind: guest %.1f%%  JIT %.1f%%  libs %.1f%%  other %.1f%%\n",
