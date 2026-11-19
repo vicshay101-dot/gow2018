@@ -1613,8 +1613,12 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         }
         case PM4ItOpcode::SetQueueReg: {
             const auto* set_data = reinterpret_cast<const PM4CmdSetQueueReg*>(header);
-            LOG_WARNING(Render, "Encountered compute SetQueueReg: vqid = {}, reg_offset = {:#x}",
-                        set_data->vqid.Value(), set_data->reg_offset.Value());
+            // gow3: GoW 2018 issues these every frame; report the first few only.
+            static std::atomic<u32> set_queue_reg_logged{0};
+            if (set_queue_reg_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_WARNING(Render, "Encountered compute SetQueueReg: vqid = {}, reg_offset = {:#x}",
+                            set_data->vqid.Value(), set_data->reg_offset.Value());
+            }
             break;
         }
         case PM4ItOpcode::DispatchDirect: {

@@ -755,6 +755,56 @@ void runtime_file_snapshot(void);
 /* Heartbeat: one line every 5 s with RSS, available RAM and thread count. If the log just stops,
  * the last line shows whether the process was starved of memory (Android kills it silently) or hung. */
 #include <pthread.h>
+#include <dirent.h>
+/* Per-thread CPU use over the last heartbeat window, busiest first: shows whether a guest
+ * thread (FEX), the GPU command thread or a driver thread limits the frame rate. */
+static void heartbeat_thread_cpu(double window_s) {
+    enum { MAXT = 384 };
+    static int tids[MAXT]; static unsigned long long last[MAXT]; static int nt;
+    int cur_tid[MAXT]; unsigned long long cur_ticks[MAXT]; char cur_name[MAXT][20]; int nc = 0;
+    DIR *d = opendir("/proc/self/task");
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) && nc < MAXT) {
+        int tid = atoi(e->d_name);
+        if (tid <= 0) continue;
+        char path[64], buf[512];
+        snprintf(path, sizeof(path), "/proc/self/task/%d/stat", tid);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f); fclose(f); buf[n] = 0;
+        char *lp = strchr(buf, '('), *rp = strrchr(buf, ')');
+        if (!lp || !rp || rp < lp) continue;
+        size_t len = (size_t)(rp - lp - 1); if (len > 19) len = 19;
+        memcpy(cur_name[nc], lp + 1, len); cur_name[nc][len] = 0;
+        unsigned long long ut = 0, st = 0; char *q = rp + 2; int field = 3;
+        char *save = NULL;
+        for (char *tok = strtok_r(q, " ", &save); tok; tok = strtok_r(NULL, " ", &save), ++field) {
+            if (field == 14) ut = strtoull(tok, NULL, 10);
+            else if (field == 15) { st = strtoull(tok, NULL, 10); break; }
+        }
+        cur_tid[nc] = tid; cur_ticks[nc] = ut + st; ++nc;
+    }
+    closedir(d);
+    double hz = (double)sysconf(_SC_CLK_TCK); if (hz <= 0) hz = 100;
+    double pct[MAXT]; double total = 0;
+    for (int i = 0; i < nc; ++i) {
+        unsigned long long prev = cur_ticks[i];
+        for (int j = 0; j < nt; ++j) if (tids[j] == cur_tid[i]) { prev = last[j]; break; }
+        pct[i] = (double)(cur_ticks[i] - prev) / hz / window_s * 100.0; total += pct[i];
+    }
+    char line[1400]; int o = snprintf(line, sizeof(line), "Heartbeat cpu: total=%.0f%%", total);
+    for (int k = 0; k < 12; ++k) {
+        int best = -1;
+        for (int i = 0; i < nc; ++i) if (pct[i] >= 1.0 && (best < 0 || pct[i] > pct[best])) best = i;
+        if (best < 0 || o > (int)sizeof(line) - 64) break;
+        o += snprintf(line + o, sizeof(line) - (size_t)o, " [%s/%d %.0f%%]", cur_name[best], cur_tid[best], pct[best]);
+        pct[best] = -1;
+    }
+    fprintf(stderr, "%s\n", line);
+    for (int i = 0; i < nc; ++i) { tids[i] = cur_tid[i]; last[i] = cur_ticks[i]; }
+    nt = nc;
+}
 static void *heartbeat_thread(void *arg) {
     (void)arg;
     for (unsigned n=1;;++n) {
@@ -777,6 +827,7 @@ static void *heartbeat_thread(void *arg) {
             fprintf(stderr,"Heartbeat threads:%s\n",ts);
             char sm[512]; runtime_sema_snapshot(sm,sizeof(sm));
             fprintf(stderr,"Heartbeat semas:%s\n",sm);
+            heartbeat_thread_cpu(5.0);
         }
         fflush(stderr);
     }

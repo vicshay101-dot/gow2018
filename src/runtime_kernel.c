@@ -311,11 +311,19 @@ static void note_usleep_spin(uintptr_t caller) {
             val_a,
             val_b);
 }
+static int spin_throttle_enabled(void) {
+    static int v=-1;
+    if (v<0) { const char *e=getenv("GOW3_SPIN_THROTTLE"); v=(e && e[0]=='1'); }
+    return v;
+}
 static ABI int32_t kernel_usleep(uint32_t usec) {
     uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
     note_usleep_spin(caller); arm_wait_flag_watch(caller);
     uint64_t ns=(uint64_t)usec*1000;
-    if (caller==SPIN_A_CALLER && spin_calls>500) {
+    /* The main thread polls A every 100 us while it waits for the frame's jobs. It used to be
+     * stretched to 1 ms here (black-screen era); that delayed every frame, so the game's own
+     * interval is kept unless GOW3_SPIN_THROTTLE=1. */
+    if (caller==SPIN_A_CALLER && spin_calls>500 && spin_throttle_enabled()) {
         sched_yield();
         if (ns<1000000ULL) ns=1000000ULL;
     }
@@ -325,7 +333,10 @@ static ABI int32_t posix_usleep(uint32_t usec) {
     uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
     note_usleep_spin(caller); arm_wait_flag_watch(caller);
     uint64_t ns=(uint64_t)usec*1000;
-    if (caller==SPIN_A_CALLER && spin_calls>500) {
+    /* The main thread polls A every 100 us while it waits for the frame's jobs. It used to be
+     * stretched to 1 ms here (black-screen era); that delayed every frame, so the game's own
+     * interval is kept unless GOW3_SPIN_THROTTLE=1. */
+    if (caller==SPIN_A_CALLER && spin_calls>500 && spin_throttle_enabled()) {
         sched_yield();
         if (ns<1000000ULL) ns=1000000ULL;
     }

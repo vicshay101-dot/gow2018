@@ -655,7 +655,12 @@ bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_a
             runtime.FillBuffer(arena, arena->Offset(device_addr), size, ZmaskUncompressed);
             return true;
         } else {
-            LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}", magic_enum::enum_name(*type));
+            // gow3: CMask aliases are hit every frame by GoW 2018; report the first few only.
+            static std::atomic<u32> meta_logged{0};
+            if (meta_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+                LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}",
+                            magic_enum::enum_name(*type));
+            }
         }
     }
     // gow3: most texel buffers alias no image; remember misses until images change.

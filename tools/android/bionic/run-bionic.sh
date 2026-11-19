@@ -40,6 +40,11 @@ export GOW3_IME_FILE="$base/ime.request" GOW3_AUDIO_FIFO="$base/audio.fifo"
 export GOW3_PRESENT_SOCKET="$base/present.sock"
 export GOW3_READBACK_LINEAR=1
 export GOW3_COPY_GPU_BUFFERS=1
+# Performance report every 5 s in the log ("Frame stats:", "Frame pacing:"): FPS, worst frame,
+# shader compiles, GPU thread time per draw and idle share. On by default while the GoW 2018
+# frame rate is being tuned; an empty file /sdcard/Download/gow2018_no_frame_stats turns it off.
+if [ -e /sdcard/Download/gow2018_no_frame_stats ]; then unset GOW3_FRAME_STATS
+else export GOW3_FRAME_STATS=${GOW3_FRAME_STATS:-1}; fi
 probe="$runtime/bin/gow3-probe"
 case ${1:-game} in vulkan) exec "$probe" --vulkan-only ;; esac
 out="$base/out"
