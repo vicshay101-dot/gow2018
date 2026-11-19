@@ -643,3 +643,116 @@ static const RuntimeExport exports[]={
     {"_sceKernelSetThreadAtexitReport",kernel_set_thread_atexit_report},
 };
 uintptr_t runtime_kernel_resolve(const char *name) { return RUNTIME_LOOKUP(exports,name); }
+
+#ifndef _WIN32
+/* On-device sampling profiler (no PC needed). Enabled by the empty file /sdcard/Download/gow2018_profile.
+ * SIGPROF samples the interrupted pc every 10 ms of CPU; every 5 s a report prints the share of samples per
+ * region: the guest image, FEX's JIT cache (anonymous executable memory) and each mapped library. */
+#include <sys/time.h>
+#include <signal.h>
+#include <ucontext.h>
+#include <stdlib.h>
+#define PROF_MAX_MAPS 384
+#define PROF_IMAGE_PAGES 16384
+typedef struct { uintptr_t lo, hi; int kind; char name[40]; } ProfMap;
+enum { PROF_GUEST=0, PROF_JIT=1, PROF_LIB=2, PROF_OTHER=3 };
+static ProfMap prof_maps[PROF_MAX_MAPS]; static int prof_nmaps;
+static volatile uint64_t prof_hits[PROF_MAX_MAPS];
+static volatile uint64_t prof_samples;
+static volatile uint32_t prof_pages[PROF_IMAGE_PAGES];
+static uintptr_t prof_image_lo, prof_image_hi;
+static int prof_on;
+static void prof_load_maps(void) {
+    FILE *f=fopen("/proc/self/maps","r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line,sizeof(line),f) && prof_nmaps<PROF_MAX_MAPS) {
+        unsigned long lo,hi; char perm[5]={0}; char path[256]={0};
+        int n=sscanf(line,"%lx-%lx %4s %*s %*s %*s %255[^\n]",&lo,&hi,perm,path);
+        if (n<3) continue;
+        ProfMap *m=&prof_maps[prof_nmaps];
+        m->lo=(uintptr_t)lo; m->hi=(uintptr_t)hi;
+        const char *base=path[0]?strrchr(path,'/'):NULL;
+        base=base?base+1:path;
+        if (m->lo>=prof_image_lo && m->lo<prof_image_hi) { m->kind=PROF_GUEST; snprintf(m->name,sizeof(m->name),"guest image"); }
+        else if (perm[2]!='x') continue;
+        else if (!path[0] || path[0]=='[') { m->kind=PROF_JIT; snprintf(m->name,sizeof(m->name),"JIT/anon exec"); }
+        else if (strstr(path,".so")) { m->kind=PROF_LIB; snprintf(m->name,sizeof(m->name),"%.39s",base); }
+        else { m->kind=PROF_OTHER; snprintf(m->name,sizeof(m->name),"%.39s",base); }
+        ++prof_nmaps;
+    }
+    fclose(f);
+}
+static void prof_handler(int sig, siginfo_t *info, void *ctx) {
+    (void)sig; (void)info;
+    ucontext_t *uc=(ucontext_t *)ctx;
+#if defined(__aarch64__)
+    uintptr_t pc=(uintptr_t)uc->uc_mcontext.pc;
+#elif defined(__x86_64__)
+    uintptr_t pc=(uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+#else
+    uintptr_t pc=0;
+#endif
+    __atomic_fetch_add(&prof_samples,1,__ATOMIC_RELAXED);
+    for (int i=0;i<prof_nmaps;++i) {
+        if (pc>=prof_maps[i].lo && pc<prof_maps[i].hi) {
+            __atomic_fetch_add(&prof_hits[i],1,__ATOMIC_RELAXED);
+            if (prof_maps[i].kind==PROF_GUEST && pc>=prof_image_lo) {
+                uintptr_t page=(pc-prof_image_lo)>>12;
+                if (page<PROF_IMAGE_PAGES) __atomic_fetch_add(&prof_pages[page],1,__ATOMIC_RELAXED);
+            }
+            return;
+        }
+    }
+}
+static void *prof_report(void *arg) {
+    (void)arg;
+    for (;;) {
+        struct timespec ts={5,0}; nanosleep(&ts,NULL);
+        uint64_t total=__atomic_exchange_n(&prof_samples,0,__ATOMIC_RELAXED);
+        if (!total) continue;
+        uint64_t kinds[4]={0,0,0,0};
+        fprintf(stderr,"PROFILE 5s: %llu samples\n",(unsigned long long)total);
+        for (int i=0;i<prof_nmaps;++i) {
+            uint64_t h=__atomic_exchange_n(&prof_hits[i],0,__ATOMIC_RELAXED);
+            kinds[prof_maps[i].kind]+=h;
+            if (h*200>=total) fprintf(stderr,"  %5.1f%%  %s\n",100.0*h/total,prof_maps[i].name);
+        }
+        fprintf(stderr,"  by kind: guest %.1f%%  JIT %.1f%%  libs %.1f%%  other %.1f%%\n",
+            100.0*kinds[PROF_GUEST]/total,100.0*kinds[PROF_JIT]/total,100.0*kinds[PROF_LIB]/total,100.0*kinds[PROF_OTHER]/total);
+        int shown=0;
+        for (int round=0; round<5; ++round) {
+            uint32_t best=0; uint32_t bi=0;
+            for (uint32_t p=0;p<PROF_IMAGE_PAGES;++p) {
+                uint32_t v=__atomic_load_n(&prof_pages[p],__ATOMIC_RELAXED);
+                if (v>best) { best=v; bi=p; }
+            }
+            if (!best || best*100<total) break;
+            __atomic_store_n(&prof_pages[bi],0,__ATOMIC_RELAXED);
+            fprintf(stderr,"  hot guest page image+0x%llx: %.1f%%\n",(unsigned long long)bi<<12,100.0*best/total);
+            ++shown;
+        }
+        (void)shown;
+    }
+    return NULL;
+}
+void runtime_profile_start(uintptr_t image_base, uint64_t image_size) {
+    FILE *on=fopen("/sdcard/Download/gow2018_profile","r");
+    if (!on) return;
+    fclose(on);
+    prof_image_lo=image_base; prof_image_hi=image_base+image_size;
+    prof_load_maps();
+    struct sigaction sa; memset(&sa,0,sizeof(sa));
+    sa.sa_sigaction=prof_handler; sa.sa_flags=SA_SIGINFO|SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGPROF,&sa,NULL);
+    struct itimerval it={{0,10000},{0,10000}};
+    setitimer(ITIMER_PROF,&it,NULL);
+    pthread_t th;
+    if (pthread_create(&th,NULL,prof_report,NULL)==0) pthread_detach(th);
+    prof_on=1;
+    fprintf(stderr,"PROFILE: sampling started, %d mappings\n",prof_nmaps);
+}
+#else
+void runtime_profile_start(uintptr_t image_base, uint64_t image_size) { (void)image_base; (void)image_size; }
+#endif

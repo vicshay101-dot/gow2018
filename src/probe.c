@@ -6,6 +6,7 @@
  * no x86-64 machine-code assumptions of its own. */
 #define _GNU_SOURCE
 #include <stdint.h>
+void runtime_profile_start(uintptr_t image_base, uint64_t image_size);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1262,6 +1263,7 @@ int main(int argc, char **argv) {
             if (result) fail("module initializer failed");
         }
     }
+    runtime_profile_start((uintptr_t)image, (uint64_t)size);
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
     entered_game=1;
 #ifndef _WIN32
