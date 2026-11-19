@@ -423,7 +423,14 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     // exact, already submitted GPU tick only if the producer outruns the GPU.
     // Readback demand paths retain their own mandatory waits; no guest memory
     // becomes visible until its matching timeline tick is complete.
-    constexpr u64 MaxAndroidInFlightSubmissions = 8;
+    // GoW 2018 issues ~18 submissions per frame; 8 forces mid-frame GPU stalls.
+    static const u64 max_android_in_flight = [] {
+        if (const char* env = std::getenv("GOW3_MAX_INFLIGHT_SUBMISSIONS")) {
+            const int v = std::atoi(env);
+            return static_cast<u64>(v < 4 ? 4 : (v > 128 ? 128 : v));
+        }
+        return u64{36};
+    }();
     // Cache the policy once: this is the hot path for thousands of submissions.
     // GOW3_VK_POLL_EACH_SUBMIT=1 re-enables the old path for device A/B testing.
     static const bool bounded_submit = [] {
@@ -431,8 +438,8 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
         return std::getenv("GOW3_ANDROID_PORT") != nullptr &&
                !(opt_out && opt_out[0] == '1');
     }();
-    if (bounded_submit && signal_value > MaxAndroidInFlightSubmissions) {
-        work_semaphore.Wait(signal_value - MaxAndroidInFlightSubmissions);
+    if (bounded_submit && signal_value > max_android_in_flight) {
+        work_semaphore.Wait(signal_value - max_android_in_flight);
     }
 
 #if TRACY_GPU_ENABLED
