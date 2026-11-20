@@ -235,6 +235,9 @@ private:
     // A short period re-protects thousands of pages at once and each faults again before it is
     // hot, a fault storm (a 2 s period gave ~20k faults/s and frame spikes).
     static constexpr u8 HotFaults = 2;
+    // Upper bound on the global hot set (pages). The opt-in run that grew to ~14k pages (56 MB)
+    // re-uploaded all of them on every use; a few thousand pages cover the pages that fault most.
+    static constexpr std::int64_t MaxHotPages = 4096;
     static constexpr auto HotPeriod = std::chrono::seconds(20);
 
     void CountWriteFaults(size_t start_page, size_t end_page) {
@@ -252,6 +255,9 @@ private:
                 continue;
             }
             if (!hot.Get(page)) {
+                if (Gow3Stats::hot_pages.load(std::memory_order_relaxed) >= MaxHotPages) {
+                    continue;
+                }
                 if (num_hot == 0) {
                     hot_since = std::chrono::steady_clock::now();
                 }

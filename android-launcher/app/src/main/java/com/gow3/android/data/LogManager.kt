@@ -16,7 +16,7 @@ internal sealed class LogResult {
 }
 
 /**
- * 负责 God of War III 运行时日志：将 `logs/` 目录树（例如 GameActivity 写入的
+ * 负责 God of War (2018) 运行时日志：将 `logs/` 目录树（例如 GameActivity 写入的
  * `android-game.log`）导出为玩家通过 Storage Access Framework 选择的 `.zip`。
  * 只读取 `filesDir/gow3port/logs`；运行时、gow3.ini、运行时安装、存档和游戏文件
  * 绝不被修改。导出是只读快照，因此导出期间运行游戏只会捕获当时已刷盘的字节。

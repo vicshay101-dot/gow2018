@@ -51,6 +51,8 @@ export GOW3_FAULT_WINDOW=${GOW3_FAULT_WINDOW:-1024}
 # Live optimization switches (bitmask, decimal): the runtime rereads this file every 250 ms, so a
 # value can be tried without rebuilding. Missing or 0 = every optimization on (the normal path).
 export GOW3_TOGGLE_FILE=${GOW3_TOGGLE_FILE:-/sdcard/Download/gow2018_toggles}
+# Hot pages: pages the guest rewrites every frame stop being tracked (capped at 4096 pages).
+export GOW3_HOT_PAGES=${GOW3_HOT_PAGES:-1}
 # Performance profile (defaults; the launcher or gow3.env can override any of them).
 export GOW3_OBJECT_MOTION=${GOW3_OBJECT_MOTION:-0}
 export GOW3_SCREEN_W=${GOW3_SCREEN_W:-1280}

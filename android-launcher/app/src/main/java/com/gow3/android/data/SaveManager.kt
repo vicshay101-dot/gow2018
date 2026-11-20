@@ -16,7 +16,7 @@ internal sealed class SaveResult {
 }
 
 /**
- * 负责 God of War III 存档：将 `savedata/` 目录树导出为玩家通过 Storage Access
+ * 负责 God of War (2018) 存档：将 `savedata/` 目录树导出为玩家通过 Storage Access
  * Framework 选择的 `.zip`，并在校验、安全备份和原子替换后导入此类归档。
  * 只触及 `filesDir/gow3port/user/savedata` 及其 `savedata_backups`；
  * 运行时、gow3.ini、运行时安装和游戏文件绝不被修改。

@@ -1,8 +1,8 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">God of War III — Daedalus Fork</string>
-    <string name="title_god_of_war_iii">GOD OF WAR III</string>
-    <string name="title_remastered">REMASTERED</string>
+    <string name="app_name">God of War (2018)</string>
+    <string name="title_god_of_war_iii">GOD OF WAR</string>
+    <string name="title_remastered">(2018)</string>
     <string name="launch_button">INICIAR</string>
     <string name="start_game_button">INICIAR JOGO</string>
     <string name="nav_home">INÍCIO</string>
@@ -15,7 +15,7 @@
     <string name="game_folder_hint">Toque para escolher outra pasta</string>
     <string name="update_folder_label">Pasta da atualização</string>
     <string name="update_folder_not_set">Não definida (usar apenas o jogo base)</string>
-    <string name="update_folder_description">Opcional: pasta da atualização, como CUSA01740-patch. Aplicada sobre o jogo ao iniciar.</string>
+    <string name="update_folder_description">Opcional: pasta da atualização, como CUSA07408-patch. Aplicada sobre o jogo ao iniciar.</string>
     <string name="change_button">ALTERAR  ›</string>
     <string name="launch_parameters_footer">As alterações são salvas imediatamente e aplicadas na próxima abertura do jogo.</string>
     <string name="param_group_display">IMAGEM</string>
@@ -40,7 +40,7 @@
     <string name="param_option_performance">Desempenho</string>
     <string name="param_option_ultra_performance">Desempenho máximo</string>
     <string name="param_shadows">Desativar sombras dinâmicas</string>
-    <string name="param_desc_shadows">Ativado desliga as sombras dinâmicas usando o patch validado para CUSA01715 v1.02 após reiniciar. Desativado mantém as sombras originais.</string>
+    <string name="param_desc_shadows">O patch de sombras dinâmicas não está disponível para God of War (2018).</string>
     <string name="param_fps_limit">Limite de FPS</string>
     <string name="param_engine_fps">FPS do motor do jogo</string>
     <string name="param_vsync">VSync</string>
@@ -70,9 +70,9 @@
     <string name="param_desc_vsync">Sincroniza os quadros do jogo com a tela para evitar cortes na imagem.</string>
     <string name="param_desc_frames_queued">Quantidade de quadros preparados antecipadamente. Menos quadros reduzem a latência; mais quadros podem melhorar a fluidez.</string>
     <string name="param_desc_free_camera">Permite mover a câmera livremente pelo cenário para explorar e testar.</string>
-    <string name="about_title">God of War III — Daedalus Fork</string>
+    <string name="about_title">God of War (2018)</string>
     <string name="about_version_fmt">Versão %1$s</string>
-    <string name="about_description">Fork Daedalus de God of War III Remastered para Android, mantido por erickmendes22. Usa um runtime Android/Bionic. Projeto base: zFitness e colaboradores.</string>
+    <string name="about_description">Fork vicshay de God of War (2018) para Android, mantido por erickmendes22. Usa um runtime Android/Bionic. Projeto base: zFitness e colaboradores.</string>
     <string name="about_third_party_licenses">Licenças de terceiros</string>
     <string name="language_setting">Idioma</string>
     <string name="language_follow_system">Seguir o sistema</string>
@@ -107,7 +107,7 @@
     <string name="github_issue_description">Relate bugs, falhas ou sugestões na página de issues.</string>
     <string name="github_open">ABRIR</string>
     <string name="mods_title">MODS E PATCHES</string>
-    <string name="mods_description">Gerencie modificações de arquivos e patches shadPS4 para God of War III.</string>
+    <string name="mods_description">Gerencie modificações de arquivos e patches shadPS4 para God of War (2018).</string>
     <string name="mods_empty_title">NENHUM MOD INSTALADO</string>
     <string name="mods_empty_description">Seus mods e patches aparecerão aqui.</string>
     <string name="no_file_picker_fmt">Nenhum seletor de arquivos disponível (%1$s).</string>
@@ -130,11 +130,11 @@
     <string name="save_archive_unsafe_path_fmt">O arquivo contém um caminho inseguro: %1$s</string>
     <string name="save_archive_duplicate_fmt">O arquivo contém um caminho duplicado: %1$s</string>
     <string name="save_archive_wrong_layout_fmt">A estrutura do arquivo não corresponde a saves: %1$s</string>
-    <string name="save_archive_title_fmt">O título não corresponde a God of War III (%2$s): %1$s</string>
+    <string name="save_archive_title_fmt">O título não corresponde a God of War (2018) (%2$s): %1$s</string>
     <string name="storage_permission_title">Permissão de armazenamento necessária</string>
-    <string name="storage_permission_message">God of War III precisa de acesso ao armazenamento para ler a pasta do jogo.</string>
-    <string name="not_a_game_folder">Não é uma pasta de God of War III</string>
-    <string name="not_a_game_update_folder">Não é uma pasta de atualização de God of War III</string>
+    <string name="storage_permission_message">God of War (2018) precisa de acesso ao armazenamento para ler a pasta do jogo.</string>
+    <string name="not_a_game_folder">Não é uma pasta de God of War (2018)</string>
+    <string name="not_a_game_update_folder">Não é uma pasta de atualização de God of War (2018)</string>
     <string name="choose_again">Escolher novamente</string>
     <string name="no_eboot">O local não contém eboot.bin.</string>
     <string name="no_eboot_path_fmt">%1$s não contém eboot.bin.</string>
@@ -143,8 +143,8 @@
     <string name="folder_eyebrow_update">ATUALIZAÇÃO DO JOGO</string>
     <string name="folder_title_game">Escolha a pasta do jogo</string>
     <string name="folder_title_update">Escolha a pasta da atualização</string>
-    <string name="folder_message_update">Opcional: pasta da atualização, como CUSA01740-patch. Seus arquivos são sobrepostos ao jogo ao iniciar, sem modificar o jogo base.</string>
-    <string name="folder_message_game">Selecione a pasta extraída de God of War III, como CUSA01715, ou a pasta que a contém. A pasta do jogo deve conter eboot.bin.</string>
+    <string name="folder_message_update">Opcional: pasta da atualização, como CUSA07408-patch. Seus arquivos são sobrepostos ao jogo ao iniciar, sem modificar o jogo base.</string>
+    <string name="folder_message_game">Selecione a pasta extraída de God of War (2018), como CUSA07408, ou a pasta que a contém. A pasta do jogo deve conter eboot.bin.</string>
     <string name="folder_current_selection_fmt">\n\nSeleção atual:\n%1$s</string>
     <string name="folder_choose_update">ESCOLHER PASTA DA ATUALIZAÇÃO</string>
     <string name="folder_choose_game">ESCOLHER PASTA DO JOGO</string>
@@ -152,7 +152,7 @@
     <string name="language_pt">Português (Brasil)</string>
     <string name="pkg_install">Instalar PKG</string>
     <string name="pkg_update">Instalar atualização PKG</string>
-    <string name="setup_title">Configurar God of War III</string>
+    <string name="setup_title">Configurar God of War (2018)</string>
     <string name="setup_message">Como deseja adicionar o jogo? Instale um PKG diretamente numa pasta escolhida ou selecione uma pasta já extraída.</string>
     <string name="setup_folder">Selecionar pasta</string>
     <string name="param_group_fps">HUD DE FPS</string>
@@ -206,7 +206,7 @@
     <string name="patch_bloom">Desativar Bloom</string>
     <string name="patch_particles">Desativar partículas suaves</string>
     <string name="patch_save_failed">Não foi possível salvar os patches.</string>
-    <string name="patch_effect_note">Os patches opcionais de efeitos exigem um executável 01.02 compatível.</string>
+    <string name="patch_effect_note">Os patches de efeitos não estão disponíveis para God of War (2018).</string>
     <string name="gpu_driver_adreno7xx">Turnip 26.3 R6 (Adreno 7xx)</string>
     <string name="param_expand_video_arena">Aumentar arena de vídeo</string>
     <string name="param_desc_expand_video_arena">Aumenta a arena de vídeo do jogo independentemente da resolução. Desativado mantém a arena original e pode causar erros de textura ou falhas, especialmente em resoluções maiores. Requer reiniciar.</string>

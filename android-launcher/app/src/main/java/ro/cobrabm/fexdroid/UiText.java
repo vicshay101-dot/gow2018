@@ -16,7 +16,7 @@ final class UiText {
         PT.put("Resume game", "Continuar jogo");
         PT.put("Restart game", "Reiniciar jogo");
         PT.put("Unsaved progress is lost", "O progresso não salvo será perdido");
-        PT.put("Restart God of War III?", "Reiniciar God of War III?");
+        PT.put("Restart God of War (2018)?", "Reiniciar God of War (2018)?");
         PT.put("Any unsaved progress will be lost.", "Todo progresso não salvo será perdido.");
         PT.put("Cancel", "Cancelar");
         PT.put("Restart", "Reiniciar");
@@ -29,11 +29,11 @@ final class UiText {
         PT.put("Drag and resize the buttons", "Arraste e redimensione os botões");
         PT.put("Reset controller layout", "Restaurar layout dos controles");
         PT.put("Quit game", "Sair do jogo");
-        PT.put("Quit God of War III?", "Sair de God of War III?");
+        PT.put("Quit God of War (2018)?", "Sair de God of War (2018)?");
         PT.put("Quit", "Sair");
-        PT.put("God of War III for Android", "God of War III para Android");
-        PT.put("Restarting God of War III…", "Reiniciando God of War III…");
-        PT.put("Starting God of War III…", "Iniciando God of War III…");
+        PT.put("God of War (2018) for Android", "God of War (2018) para Android");
+        PT.put("Restarting God of War (2018)…", "Reiniciando God of War (2018)…");
+        PT.put("Starting God of War (2018)…", "Iniciando God of War (2018)…");
         PT.put("No upscaling", "Sem ampliação");
         PT.put("no FPS limit", "sem limite de FPS");
         PT.put(" FPS limit", " FPS de limite");
@@ -100,7 +100,7 @@ final class UiText {
                 return entry.getValue().toUpperCase(new Locale("pt", "BR"));
         }
         // Dynamic subtitles retain their numbers and version identifiers.
-        for (String key : new String[]{"God of War III for Android", "No upscaling", "no FPS limit", " FPS limit", "Sharpness: "})
+        for (String key : new String[]{"God of War (2018) for Android", "No upscaling", "no FPS limit", " FPS limit", "Sharpness: "})
             text = text.replace(key, PT.get(key));
         return text;
     }

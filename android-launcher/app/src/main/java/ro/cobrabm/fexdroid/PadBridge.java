@@ -124,6 +124,6 @@ final class PadBridge {
                 out.write(text.toString().getBytes(StandardCharsets.US_ASCII));
             }
             if (!temp.renameTo(state)) throw new java.io.IOException("Cannot publish controller state");
-        } catch (java.io.IOException ex) { android.util.Log.e("God of War III", "Controller bridge",ex); }
+        } catch (java.io.IOException ex) { android.util.Log.e("God of War (2018)", "Controller bridge",ex); }
     }
 }

@@ -84,7 +84,7 @@ internal fun HomeScreen(
         Spacer(Modifier.height(36.dp))
         Text(stringResource(R.string.title_god_of_war_iii), color = LauncherColors.textPrimary, fontFamily = FontFamily.Serif, fontSize = 20.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
         Text(stringResource(R.string.title_remastered), color = LauncherColors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.Medium, letterSpacing = 2.sp)
-        Text(if (isBionic) "Daedalus Fork · Bionic" else "Daedalus Fork", color = LauncherColors.gold, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(if (isBionic) "vicshay · Bionic" else "vicshay", color = LauncherColors.gold, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(28.dp))
         LaunchButton(onStartGame)
         Spacer(Modifier.height(20.dp))

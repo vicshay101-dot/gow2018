@@ -97,7 +97,7 @@ final class SettingsDialog {
                 int eq=line.indexOf('=');
                 if (eq>0 && !line.startsWith("#")) values.put(line.substring(0,eq).trim(),line.substring(eq+1).trim());
             }
-        } catch (Exception ex) { android.util.Log.e("God of War III","settings: "+ex); }
+        } catch (Exception ex) { android.util.Log.e("God of War (2018)","settings: "+ex); }
     }
     /** Changed keys replace their lines; new keys are appended. Written whole, then renamed. */
     private boolean save(Map<String,String> changed) {
@@ -113,7 +113,7 @@ final class SettingsDialog {
         File temporary=new File(file.getPath()+".tmp");
         try (Writer w=new OutputStreamWriter(new FileOutputStream(temporary),"UTF-8")) {
             for (String line:out) w.write(line+"\n");
-        } catch (Exception ex) { android.util.Log.e("God of War III","settings: "+ex); return false; }
+        } catch (Exception ex) { android.util.Log.e("God of War (2018)","settings: "+ex); return false; }
         return temporary.renameTo(file);
     }
 
@@ -353,7 +353,7 @@ final class SettingsDialog {
             box.addView(note);
         }
         TextView restartNote=new TextView(activity); restartNote.setTextSize(13); restartNote.setAlpha(0.7f);
-        restartNote.setText(UiText.get(activity, "For God of War III 1.09 offline play. They switch at once, while you play."));
+        restartNote.setText(UiText.get(activity, "For God of War (2018) 1.09 offline play. They switch at once, while you play."));
         restartNote.setPadding(0,dp(8),0,0);
         box.addView(restartNote);
         ScrollView scroll=new ScrollView(activity); scroll.addView(box);
@@ -375,7 +375,7 @@ final class SettingsDialog {
         File temporary=new File(state.getPath()+".tmp");
         try (Writer w=new OutputStreamWriter(new FileOutputStream(temporary),"UTF-8")) {
             w.write((health ? "1" : "0")+(items ? "1" : "0")+"\n");
-        } catch (Exception ex) { android.util.Log.e("God of War III","cheats: "+ex); return false; }
+        } catch (Exception ex) { android.util.Log.e("God of War (2018)","cheats: "+ex); return false; }
         return temporary.renameTo(state);
     }
      */

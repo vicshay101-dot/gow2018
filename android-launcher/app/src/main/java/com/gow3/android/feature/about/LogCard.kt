@@ -22,7 +22,7 @@ import com.gow3.android.R
 import com.gow3.android.ui.components.ActionButton
 import com.gow3.android.ui.components.LauncherColors
 
-/** 将 launcher 的 God of War III 运行时日志（例如 android-game.log）导出为 zip。 */
+/** 将 launcher 的 God of War (2018) 运行时日志（例如 android-game.log）导出为 zip。 */
 @Composable
 internal fun LogCard(
     hasLogs: Boolean,

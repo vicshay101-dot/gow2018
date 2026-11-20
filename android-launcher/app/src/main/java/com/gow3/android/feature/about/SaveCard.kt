@@ -23,7 +23,7 @@ import com.gow3.android.R
 import com.gow3.android.ui.components.ActionButton
 import com.gow3.android.ui.components.LauncherColors
 
-/** 将玩家的 God of War III 存档备份为 zip，并在带安全备份的情况下恢复一个备份。 */
+/** 将玩家的 God of War (2018) 存档备份为 zip，并在带安全备份的情况下恢复一个备份。 */
 @Composable
 internal fun SaveCard(
     hasSaves: Boolean,

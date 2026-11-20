@@ -37,15 +37,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** God of War III-only Android player. Keeps the game surface alive beneath its sliding drawer. */
+/** God of War (2018)-only Android player. Keeps the game surface alive beneath its sliding drawer. */
 public final class GameActivity extends Activity {
     /** The app's files (application id com.gow3.android), its Linux rootfs and gow3port runtime.
      *  Rootfs programs are launched through the in-tree loader when their PT_INTERP slot cannot
      *  hold the app-private path. */
     private String FILES, ROOT, BASE;
-    /** The game (e.g. CUSA01740, with eboot.bin) in shared storage, chosen by the player. */
+    /** The game (e.g. CUSA07408, with eboot.bin) in shared storage, chosen by the player. */
     private String gameDir;
-    /** An optional update folder (e.g. CUSA01740-patch): laid over the game at start. */
+    /** An optional update folder (e.g. CUSA07408-patch): laid over the game at start. */
     private String updateDir;
     private static final int REQUEST_FOLDER=1, REQUEST_STORAGE=2;
     private SurfaceHolder pendingHolder;
@@ -111,7 +111,7 @@ public final class GameActivity extends Activity {
             try {
                 boolean installed=RuntimeInstaller.ensure(GameActivity.this, new File(FILES),
                     message -> main.post(() -> status.setText(UiText.get(GameActivity.this, message))));
-                android.util.Log.i("God of War III","runtime installed="+installed);
+                android.util.Log.i("God of War (2018)","runtime installed="+installed);
                 main.post(() -> {
                     startingX=false;
                     if (destroyed) return;
@@ -190,7 +190,7 @@ public final class GameActivity extends Activity {
                 XInput.button(1,false);
             return true;
         });
-        status=text("Starting God of War III…",18,0xffc6ad76); status.setGravity(Gravity.CENTER);
+        status=text("Starting God of War (2018)…",18,0xffc6ad76); status.setGravity(Gravity.CENTER);
         screen.addView(status,frame(-1,-1,Gravity.CENTER));
         status.setClickable(false);
 
@@ -245,7 +245,7 @@ public final class GameActivity extends Activity {
         });
          */
         menuItem("ic_refresh","Restart game","Unsaved progress is lost",() -> new AlertDialog.Builder(this)
-            .setTitle(UiText.get(this, "Restart God of War III?")).setMessage(UiText.get(this, "Any unsaved progress will be lost."))
+            .setTitle(UiText.get(this, "Restart God of War (2018)?")).setMessage(UiText.get(this, "Any unsaved progress will be lost."))
             .setNegativeButton(UiText.get(this, "Cancel"),null).setPositiveButton(UiText.get(this, "Restart"),(dialog,which) -> restartGame()).show());
 
         section("Graphics");
@@ -283,7 +283,7 @@ public final class GameActivity extends Activity {
         });
 
         menuItem("ic_exit","Quit game",null,() -> new AlertDialog.Builder(this)
-            .setTitle(UiText.get(this, "Quit God of War III?")).setMessage(UiText.get(this, "Any unsaved progress will be lost."))
+            .setTitle(UiText.get(this, "Quit God of War (2018)?")).setMessage(UiText.get(this, "Any unsaved progress will be lost."))
             .setNegativeButton(UiText.get(this, "Cancel"),null).setPositiveButton(UiText.get(this, "Quit"),(dialog,which) -> finish()).show());
 
         // The version, pinned under the scrolling menu.
@@ -298,7 +298,7 @@ public final class GameActivity extends Activity {
     }
 
     private void restartGame() {
-        closeDrawer(); status.setText(UiText.get(this, "Restarting God of War III…")); status.setVisibility(View.VISIBLE);
+        closeDrawer(); status.setText(UiText.get(this, "Restarting God of War (2018)…")); status.setVisibility(View.VISIBLE);
         if (!runtimeReady) { startPending(); return; }
         worker.execute(() -> { stopGame(); startGame(); });
     }
@@ -531,13 +531,13 @@ public final class GameActivity extends Activity {
             if (!new File(ROOT,"usr/bin/Xvfb").canExecute() ||
                     !new File(BASE,"arm64/bin/gow3-probe").canExecute() ||
                     !new File(BASE,"run-gow3.sh").isFile())
-                throw new java.io.IOException("The God of War III runtime is missing. Install the runtime bundle.");
+                throw new java.io.IOException("The God of War (2018) runtime is missing. Install the runtime bundle.");
             new File(FILES,"home/gow3port").mkdirs();
             try (PrintWriter passwd=new PrintWriter(new File(ROOT,"etc/passwd"));
                  PrintWriter group=new PrintWriter(new File(ROOT,"etc/group"))) {
                 int uid=android.os.Process.myUid();
                 passwd.println("root:x:0:0:root:/root:/bin/sh");
-                passwd.println("user:x:"+uid+":"+uid+":God of War III:"+FILES+"/home/gow3port:"+ROOT+"/bin/sh");
+                passwd.println("user:x:"+uid+":"+uid+":God of War (2018):"+FILES+"/home/gow3port:"+ROOT+"/bin/sh");
                 group.println("root:x:0:"); group.println("user:x:"+uid+":");
             }
             new File(ROOT,"tmp/.X0-lock").delete(); new File(ROOT,"tmp/.X11-unix/X0").delete();
@@ -553,7 +553,7 @@ public final class GameActivity extends Activity {
             {
                 String line;
                 while ((line=r.readLine())!=null && !destroyed) {
-                    android.util.Log.i("God of War III-X11",line);
+                    android.util.Log.i("God of War (2018)-X11",line);
                     Matcher m=ready.matcher(line);
                     if (m.find()) {
                         shmid=Integer.parseInt(m.group(1));
@@ -571,7 +571,7 @@ public final class GameActivity extends Activity {
     private void attach(SurfaceHolder holder) {
         if (destroyed || !holder.getSurface().isValid()) return;
         String result=DisplayBridge.start(holder.getSurface(),ROOT+"/tmp/.fxshm/sock",shmid,60,ROOT+"/tmp/fxpresent.sock");
-        android.util.Log.i("God of War III",result);
+        android.util.Log.i("God of War (2018)",result);
         if (!result.startsWith("bridge running:")) { error(result); return; }
         XInput.connect(0);
         if (!displayOnly && game==null) worker.execute(() -> startGame());
@@ -580,8 +580,7 @@ public final class GameActivity extends Activity {
     }
     // ---- Game folder: the extracted retail game in shared storage ----
     /** Known retail folder names; the selected folder is still validated by eboot.bin. */
-    private static final String[] SERIALS={"CUSA01715","CUSA01740","CUSA00900","CUSA00207","CUSA00208","CUSA00299",
-        "CUSA01363","CUSA03179","CUSA03014","CUSA03023"};
+    private static final String[] SERIALS={"CUSA07408"};
     private static boolean isGame(File dir) { return dir!=null && new File(dir,"eboot.bin").isFile(); }
     private boolean hasGame() {
         // Match GameFolderManager: the selected real path is the source of truth.
@@ -598,11 +597,11 @@ public final class GameActivity extends Activity {
                 android.Manifest.permission.WRITE_EXTERNAL_STORAGE},REQUEST_STORAGE);
             return;
         }
-        status.setText(UiText.get(this, change ? "Choose the God of War III game folder." :
-            "Choose your God of War III game folder (e.g. CUSA01740, the folder with eboot.bin)."));
+        status.setText(UiText.get(this, change ? "Choose the God of War (2018) game folder." :
+            "Choose your God of War (2018) game folder (e.g. CUSA07408, the folder with eboot.bin)."));
         status.setVisibility(View.VISIBLE);
-        new AlertDialog.Builder(this).setTitle(UiText.get(this, "God of War III game folder"))
-            .setMessage(UiText.get(this, "Select the extracted game folder (e.g. CUSA01740 or CUSA00900, which contains eboot.bin) or the folder "
+        new AlertDialog.Builder(this).setTitle(UiText.get(this, "God of War (2018) game folder"))
+            .setMessage(UiText.get(this, "Select the extracted game folder (e.g. CUSA07408 or CUSA00900, which contains eboot.bin) or the folder "
                 +"that holds it, in your phone's storage."+(gameDir!=null ? "\n\nCurrent: "+gameDir : "")))
             .setPositiveButton(UiText.get(this, "Choose folder"),(d,w) -> {
                 Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
@@ -617,7 +616,7 @@ public final class GameActivity extends Activity {
         if (code!=REQUEST_STORAGE) return;
         if (results.length>0 && results[0]==android.content.pm.PackageManager.PERMISSION_GRANTED) {
             if (hasGame()) startPending(); else askGameFolder(false);
-        } else error("God of War III needs storage access to read the game folder.");
+        } else error("God of War (2018) needs storage access to read the game folder.");
     }
     @Override protected void onActivityResult(int code,int result,Intent data) {
         super.onActivityResult(code,result,data);
@@ -627,7 +626,7 @@ public final class GameActivity extends Activity {
         if (dir!=null && !isGame(dir))
             for (String serial : SERIALS) if (isGame(new File(dir,serial))) { dir=new File(dir,serial); break; }
         if (!isGame(dir)) {
-            new AlertDialog.Builder(this).setTitle(UiText.get(this, "Not a God of War III folder"))
+            new AlertDialog.Builder(this).setTitle(UiText.get(this, "Not a God of War (2018) folder"))
                 .setMessage(UiText.get(this, (dir==null ? "That location" : dir.getPath())+" has no eboot.bin."))
                 .setPositiveButton(UiText.get(this, "Choose again"),(d,w) -> askGameFolder(gameDir!=null)).show();
             return;
@@ -635,7 +634,7 @@ public final class GameActivity extends Activity {
         boolean changed=gameDir!=null && !gameDir.equals(dir.getPath());
         gameDir=dir.getPath();
         getSharedPreferences("gow3",MODE_PRIVATE).edit().putString("game_dir",gameDir).apply();
-        status.setText(UiText.get(this, "Starting God of War III…"));
+        status.setText(UiText.get(this, "Starting God of War (2018)…"));
         if (changed && game!=null) restartGame(); else startPending();
     }
     /** A storage folder of the picker (tree document "primary:Path" or "XXXX-XXXX:Path") as a path. */
@@ -672,7 +671,7 @@ public final class GameActivity extends Activity {
                 String title=r.readLine(), initial=r.readLine();
                 request.delete();
                 showIme(Math.max(1,max),title==null ? "" : title,initial==null ? "" : initial);
-            } catch (Exception ex) { android.util.Log.e("God of War III","text request: "+ex); request.delete(); }
+            } catch (Exception ex) { android.util.Log.e("God of War (2018)","text request: "+ex); request.delete(); }
         }
         main.postDelayed(this::pollIme,250);
     }
@@ -718,8 +717,8 @@ public final class GameActivity extends Activity {
         File temporary=new File(BASE,"ime.request.result.tmp"), result=new File(BASE,"ime.request.result");
         try (java.io.Writer w=new java.io.OutputStreamWriter(new java.io.FileOutputStream(temporary),"UTF-8")) {
             w.write((ok ? "ok" : "cancel")+"\n"+value.replace('\n',' ')+"\n");
-        } catch (Exception ex) { android.util.Log.e("God of War III","text answer: "+ex); return; }
-        if (!temporary.renameTo(result)) android.util.Log.e("God of War III","text answer: rename failed");
+        } catch (Exception ex) { android.util.Log.e("God of War (2018)","text answer: "+ex); return; }
+        if (!temporary.renameTo(result)) android.util.Log.e("God of War (2018)","text answer: rename failed");
     }
     /** The last value of a gow3.ini setting (as run-gow3.sh reads it), or null. */
     private String setting(String key) {
@@ -755,12 +754,12 @@ public final class GameActivity extends Activity {
                     // interrupted then, after the next game started. Only the current game's errors show.
                     if (!destroyed && game==launched) error(ex.toString());
                 }
-            },"God of War III-log"); log.setDaemon(true); log.start();
+            },"God of War (2018)-log"); log.setDaemon(true); log.start();
         } catch (Exception ex) { error(ex.toString()); }
     }
     private void error(String message) {
         hadError=true;
-        android.util.Log.e("God of War III",message);
+        android.util.Log.e("God of War (2018)",message);
         main.post(() -> { if (!destroyed) { status.setText(UiText.get(this, message)); status.setVisibility(View.VISIBLE); } });
     }
     private void stopGame() {

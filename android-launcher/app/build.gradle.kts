@@ -22,7 +22,7 @@ android {
             applicationId = "com.gow3.android.bionic"
             minSdk = 30
             versionName = "2.1.6-daedalus.4-bionic"
-            manifestPlaceholders["appLabel"] = "God of War III — Daedalus Fork"
+            manifestPlaceholders["appLabel"] = "God of War (2018)"
         }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
