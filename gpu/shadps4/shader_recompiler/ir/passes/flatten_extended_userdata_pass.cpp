@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <cstring>
@@ -39,6 +41,19 @@
 #include "shader_recompiler/ir/reg.h"
 #include "shader_recompiler/ir/srt_gvn_table.h"
 #include "shader_recompiler/ir/value.h"
+
+// gow3: the same unsupported opcode or SRT offset failure repeats for every descriptor of every
+// shader compiled on the ShaderComp threads. Log each (what, detail) pair at first occurrence,
+// then once every 1024 occurrences, instead of on every call.
+static void LogSrtError(std::string_view what, std::string_view detail) {
+    static std::mutex mutex;
+    static std::unordered_map<std::string, u32> counts;
+    std::scoped_lock lock{mutex};
+    const u32 count = ++counts[std::string{what} + std::string{detail}];
+    if (count <= 4 || (count & 1023) == 0) {
+        LOG_ERROR(Render_Recompiler, "{} [{}] (occurrence {})", what, detail, count);
+    }
+}
 
 #ifdef ARCH_X86_64
 
@@ -782,8 +797,7 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
         ABORT_ON_FAILURE(EmitComputeOffsetBitFieldUExtract(c, reg, pass_info, inst));
         return true;
     default:
-        LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}",
-                  magic_enum::enum_name(inst->GetOpcode()));
+        LogSrtError("Unexpected instruction for offset computation", magic_enum::enum_name(inst->GetOpcode()));
         return false;
     }
 }
@@ -819,7 +833,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     }
 
     if (!PushPtr(c, pass_info, off_dw)) {
-        LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+        LogSrtError("Failed to compute offset for SRT walker", "");
         return;
     }
     PassInfo::PtrUserList* use_list = pass_info.GetUsesAsPointer(subtree);
@@ -835,7 +849,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
             c.mov(r10d, ptr[rdi + (src_off_dw.U32() << 2)]);
         } else {
             if (!ComputeOffset(c, r10d, pass_info, src_off_dw)) {
-                LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+                LogSrtError("Failed to compute offset for SRT walker", "");
                 continue;
             }
             c.shl(r10d, 2);
@@ -973,8 +987,7 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         return ok;
     }
     default:
-        LOG_ERROR(Render_Recompiler, "Unexpected instruction for offset computation, {}",
-                  magic_enum::enum_name(inst->GetOpcode()));
+        LogSrtError("Unexpected instruction for offset computation", magic_enum::enum_name(inst->GetOpcode()));
         return false;
     }
 }
@@ -991,7 +1004,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     } else {
         SrtProgram offset;
         if (!ComputeOffset(offset, pass_info, off_dw)) {
-            LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+            LogSrtError("Failed to compute offset for SRT walker", "");
             return;
         }
         p.insert(p.end(), offset.begin(), offset.end());
@@ -1005,7 +1018,7 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         } else {
             SrtProgram offset;
             if (!ComputeOffset(offset, pass_info, src_off_dw)) {
-                LOG_ERROR(Render_Recompiler, "Failed to compute offset for SRT walker");
+                LogSrtError("Failed to compute offset for SRT walker", "");
                 continue;
             }
             p.insert(p.end(), offset.begin(), offset.end());

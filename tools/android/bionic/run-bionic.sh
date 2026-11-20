@@ -14,11 +14,6 @@ export GOW3_BIONIC_RUNNER="$base/run-bionic.sh"
 export GOW3_CONFIG="$base/gow3.ini"
 mkdir -p "$TMPDIR" "$HOME/.fex-emu" "$HOME/.cache/fex-emu" "$base/user" "$base/logs"
 [ -f "$GOW3_CONFIG" ] || cp "$base/gow3.default.ini" "$GOW3_CONFIG"
-if [ -f "$base/gow3.env" ]; then
-    set -a
-    . "$base/gow3.env"
-    set +a
-fi
 setting() { sed -n "s/^$1=//p" "$GOW3_CONFIG" | tail -n 1; }
 chip=$("$runtime/bin/kgsl-chip-id" 2>/dev/null || true)
 turnip=${GOW3_BIONIC_DRIVER:-auto}
@@ -43,23 +38,10 @@ echo "Bionic Vulkan selection: $turnip${GOW3_VULKAN_DRIVER:+ ($GOW3_VULKAN_DRIVE
 export GOW3_ANDROID_INPUT=1 GOW3_PAD_FILE="$base/android-pad.state" GOW3_PAD_QUIET=1
 export GOW3_IME_FILE="$base/ime.request" GOW3_AUDIO_FIFO="$base/audio.fifo"
 export GOW3_PRESENT_SOCKET="$base/present.sock"
-export GOW3_READBACK_LINEAR=${GOW3_READBACK_LINEAR:-0}
-export GOW3_COPY_GPU_BUFFERS=${GOW3_COPY_GPU_BUFFERS:-0}
-export GOW3_TEXTURE_HELPER=${GOW3_TEXTURE_HELPER:-1}
-export GOW3_PREP_WORKERS=${GOW3_PREP_WORKERS:-2}
-export GOW3_FAULT_WINDOW=${GOW3_FAULT_WINDOW:-1024}
-# Live optimization switches (bitmask, decimal): the runtime rereads this file every 250 ms, so a
-# value can be tried without rebuilding. Missing or 0 = every optimization on (the normal path).
-export GOW3_TOGGLE_FILE=${GOW3_TOGGLE_FILE:-/sdcard/Download/gow2018_toggles}
-# Hot pages: pages the guest rewrites every frame stop being tracked (capped at 4096 pages).
-export GOW3_HOT_PAGES=${GOW3_HOT_PAGES:-1}
-# Performance profile (defaults; the launcher or gow3.env can override any of them).
-export GOW3_OBJECT_MOTION=${GOW3_OBJECT_MOTION:-0}
-export GOW3_SCREEN_W=${GOW3_SCREEN_W:-1280}
-export GOW3_SCREEN_H=${GOW3_SCREEN_H:-720}
-export GOW3_DEFERRED_READBACK=${GOW3_DEFERRED_READBACK:-1}
-export GOW3_STALE_READBACK=${GOW3_STALE_READBACK:-1}
-export GOW3_MAX_INFLIGHT_SUBMISSIONS=${GOW3_MAX_INFLIGHT_SUBMISSIONS:-36}
+export GOW3_READBACK_LINEAR=1
+export GOW3_COPY_GPU_BUFFERS=1
+export GOW3_UFFD=1
+export GOW3_FAULT_WINDOW=4
 # Performance report every 5 s in the log ("Frame stats:", "Frame pacing:"): FPS, worst frame,
 # shader compiles, GPU thread time per draw and idle share. On by default while the GoW 2018
 # frame rate is being tuned; an empty file /sdcard/Download/gow2018_no_frame_stats turns it off.
@@ -110,7 +92,7 @@ echo "Game language: system_param=${GOW3_LANGUAGE:-1} (1=English, 7=Portuguese, 
 # The retail pool is 5056 MiB; the resolution/texture patches ask for more (7104+ for the default
 # set). On a phone RAM is the binding constraint: lower the patch set / resolution if the app is
 # killed. See docs/ANDROID_PORT.md.
-export GOW3_DMEM_MB=${GOW3_DMEM_MB:-0}; [ "${GOW3_DMEM_MB:-0}" -ge 5056 ] 2>/dev/null || export GOW3_DMEM_MB=5056
+export GOW3_DMEM_MB=${GOW3_DMEM_MB:-0}; [ "${GOW3_DMEM_MB:-0}" -ge 5056 ] 2>/dev/null || export GOW3_DMEM_MB=7104
 export GOW3_VBLANK_HZ=${GOW3_VBLANK_HZ:-0}; [ "${GOW3_VBLANK_HZ:-0}" -ge 1 ] 2>/dev/null || export GOW3_VBLANK_HZ=60
 echo "Texture integrity: title=${GOW3_GAME_TITLE:-unknown} version=${GOW3_GAME_VERSION:-unknown} patch=${GOW3_PATCH_STATUS:-unknown} shadows=${GOW3_SHADOWS_REQUESTED:-unknown}(${GOW3_SHADOWS_STATUS:-unknown}) readback_linear=${GOW3_READBACK_LINEAR:-1}(${GOW3_READBACK_LINEAR_SOURCE:-unknown}) deferred=${GOW3_DEFERRED_READBACK:-unknown} stale=${GOW3_STALE_READBACK:-unknown} dmem=${GOW3_DMEM_MB}MiB vblank=${GOW3_VBLANK_HZ}Hz turnip=${turnip}"
 profile_file="$out/texture-profile.json"
