@@ -29,7 +29,7 @@ class AndroidFirstRunAndPerfTests(unittest.TestCase):
         self.assertIn('Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION', picker)
         self.assertIn('REQUEST_ALL_FILES_FOLDER = 1013', picker)
         self.assertNotIn('if (kind == Kind.GAME) ensureGameFolder()', picker)
-        self.assertIn('CUSA01715', picker)
+        self.assertIn('CUSA07408', picker)
         self.assertIn('android.permission.MANAGE_EXTERNAL_STORAGE', manifest)
 
     def test_guest_direct_output_skips_unused_compute_pipelines(self):

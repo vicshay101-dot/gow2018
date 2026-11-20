@@ -26,6 +26,8 @@ static _Atomic uint64_t copy_bytes_total, copy_bytes_large, copy_calls_large;
 /* Bytes per guest caller for copies of 64 KiB or more (caller = guest return address). */
 typedef struct { uintptr_t caller; _Atomic uint64_t bytes; _Atomic uint64_t calls; } CopyCaller;
 static CopyCaller copy_callers[128];
+/* Destination blocks (64 KiB) of large memsets: shows whether zero-fills hit the blocks that fault. */
+static _Atomic uint32_t memset_dst_blocks[4096];
 static void note_copy_caller(uintptr_t caller, size_t size) {
     uint32_t h=(uint32_t)((caller>>2)*2654435761u)&127u;
     for (int i=0;i<128;++i) {
@@ -52,6 +54,16 @@ static inline void note_guest_copy(size_t size, uintptr_t caller) {
 }
 /* Prints the guest callers that moved the most bytes in large copies since the last call, then resets. */
 void runtime_copy_callers_report(uintptr_t image_base) {
+    for (int round=0; round<3; ++round) {
+        int best=-1; uint32_t bv=0;
+        for (int k=0;k<4096;++k) {
+            uint32_t v=atomic_load_explicit(&memset_dst_blocks[k],memory_order_relaxed);
+            if (v>bv) { bv=v; best=k; }
+        }
+        if (best<0 || bv<10) break;
+        atomic_store_explicit(&memset_dst_blocks[best],0,memory_order_relaxed);
+        fprintf(stderr,"  big memset into 64 KiB block at %#llx: %u times\n",(unsigned long long)best<<16,bv);
+    }
     for (int round=0; round<5; ++round) {
         int best=-1; uint64_t bb=0;
         for (int k=0;k<128;++k) {
@@ -216,6 +228,7 @@ static ABI __attribute__((noreturn)) void stack_fail(void) {
 }
 static ABI void *guest_memset(void *dst, int value, size_t size) {
     note_guest_copy(size, size>=65536 ? guest_cpu_return_address((uintptr_t)__builtin_return_address(0)) : 0);
+    if (size>=65536) atomic_fetch_add_explicit(&memset_dst_blocks[((uintptr_t)dst>>16)&4095],1,memory_order_relaxed);
     atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memset(dst, value, size);
 }
 static ABI void *guest_memcpy(void *dst, const void *src, size_t size) {
