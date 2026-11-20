@@ -67,6 +67,28 @@ struct PageManager::Impl {
 
     virtual void Protect(VAddr address, size_t size, Core::MemoryPermission perms) = 0;
 
+    // gow3: where guest writes hit tracked memory. Counts per 64 KiB block; every 4096 faults the
+    // top three blocks are printed, so the log says whether a few blocks cause most faults.
+    static void NoteWriteFaultAddress(VAddr addr) {
+        static std::atomic<u32> blocks[4096];
+        static std::atomic<u32> total{0};
+        blocks[(addr >> 16) & 4095].fetch_add(1, std::memory_order_relaxed);
+        if (total.fetch_add(1, std::memory_order_relaxed) % 4096 != 4095) {
+            return;
+        }
+        for (int round = 0; round < 3; ++round) {
+            u32 best = 0, best_block = 0;
+            for (u32 b = 0; b < 4096; ++b) {
+                const u32 v = blocks[b].load(std::memory_order_relaxed);
+                if (v > best) { best = v; best_block = b; }
+            }
+            if (best == 0) break;
+            blocks[best_block].store(0, std::memory_order_relaxed);
+            std::fprintf(stderr, "Write faults: %u in 64 KiB block at %#llx\n", best,
+                         static_cast<unsigned long long>(best_block) << 16);
+        }
+    }
+
     static bool GuestFaultSignalHandler(void* context, void* fault_address) {
         const auto addr = reinterpret_cast<VAddr>(fault_address);
         // gow3: the draw recording thread handles its faults inline too (vk_draw_pipe.h).
@@ -75,6 +97,7 @@ struct PageManager::Impl {
             Gow3Stats::gpu_signal_faults.fetch_add(1, std::memory_order_relaxed);
         }
         if (Common::IsWriteError(context)) {
+            NoteWriteFaultAddress(addr);
             Gow3Stats::Timer timer{Gow3Stats::t_write_faults};
             return rasterizer->OnWriteFault(addr, is_gpu_thread);
         } else {
@@ -359,6 +382,7 @@ public:
             }
             const VAddr addr = msg.arg.pagefault.address;
             const auto ptid = msg.arg.pagefault.feat.ptid;
+            NoteWriteFaultAddress(addr);
             {
                 Gow3Stats::Timer timer{Gow3Stats::t_write_faults};
                 rasterizer->OnWriteFault(addr, rasterizer->IsGpuSideThreadId(ptid));

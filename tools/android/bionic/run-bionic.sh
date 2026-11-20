@@ -44,10 +44,13 @@ export GOW3_ANDROID_INPUT=1 GOW3_PAD_FILE="$base/android-pad.state" GOW3_PAD_QUI
 export GOW3_IME_FILE="$base/ime.request" GOW3_AUDIO_FIFO="$base/audio.fifo"
 export GOW3_PRESENT_SOCKET="$base/present.sock"
 export GOW3_READBACK_LINEAR=${GOW3_READBACK_LINEAR:-0}
-export GOW3_COPY_GPU_BUFFERS=1
+export GOW3_COPY_GPU_BUFFERS=${GOW3_COPY_GPU_BUFFERS:-0}
 export GOW3_TEXTURE_HELPER=${GOW3_TEXTURE_HELPER:-1}
 export GOW3_PREP_WORKERS=${GOW3_PREP_WORKERS:-2}
 export GOW3_FAULT_WINDOW=${GOW3_FAULT_WINDOW:-1024}
+# Live optimization switches (bitmask, decimal): the runtime rereads this file every 250 ms, so a
+# value can be tried without rebuilding. Missing or 0 = every optimization on (the normal path).
+export GOW3_TOGGLE_FILE=${GOW3_TOGGLE_FILE:-/sdcard/Download/gow2018_toggles}
 # Performance profile (defaults; the launcher or gow3.env can override any of them).
 export GOW3_OBJECT_MOTION=${GOW3_OBJECT_MOTION:-0}
 export GOW3_SCREEN_W=${GOW3_SCREEN_W:-1280}

@@ -291,6 +291,7 @@ static void spin_xref_once(uintptr_t caller) {
     spin_xref_scan(SPIN_B_ADDR,"B");
 }
 void runtime_copy_stats_take(uint64_t *total, uint64_t *large, uint64_t *calls_large);
+void runtime_copy_callers_report(uintptr_t image_base);
 static uintptr_t prof_image_lo;
 static struct { uintptr_t key; uint64_t n; } usleep_callers[256];
 static void usleep_caller_note(uintptr_t caller) {
@@ -794,6 +795,7 @@ static void *prof_report(void *arg) {
         runtime_copy_stats_take(&cb,&cl,&ccl);
         fprintf(stderr,"  guest copies this 5s: %.1f MB total, %.1f MB in %llu copies of >=64 KiB\n",
             cb/1e6,cl/1e6,(unsigned long long)ccl);
+        runtime_copy_callers_report(prof_image_lo);
     }
     return NULL;
 }

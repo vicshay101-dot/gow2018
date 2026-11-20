@@ -23,11 +23,47 @@ static uint64_t stack_canary;
 static _Atomic size_t memory_calls;
 static _Atomic uint64_t copy_bytes_total, copy_bytes_large, copy_calls_large;
 /* Bytes moved by guest memset/memcpy/memmove: total, and the part in copies of 64 KiB or more. */
-static inline void note_guest_copy(size_t size) {
+/* Bytes per guest caller for copies of 64 KiB or more (caller = guest return address). */
+typedef struct { uintptr_t caller; _Atomic uint64_t bytes; _Atomic uint64_t calls; } CopyCaller;
+static CopyCaller copy_callers[128];
+static void note_copy_caller(uintptr_t caller, size_t size) {
+    uint32_t h=(uint32_t)((caller>>2)*2654435761u)&127u;
+    for (int i=0;i<128;++i) {
+        CopyCaller *c=&copy_callers[(h+i)&127u];
+        uintptr_t key=__atomic_load_n(&c->caller,__ATOMIC_RELAXED);
+        if (key!=caller) {
+            uintptr_t expected=0;
+            if (key!=0 || !__atomic_compare_exchange_n(&c->caller,&expected,caller,0,__ATOMIC_RELAXED,__ATOMIC_RELAXED)) {
+                if (__atomic_load_n(&c->caller,__ATOMIC_RELAXED)!=caller) continue;
+            }
+        }
+        atomic_fetch_add_explicit(&c->bytes,(uint64_t)size,memory_order_relaxed);
+        atomic_fetch_add_explicit(&c->calls,1,memory_order_relaxed);
+        return;
+    }
+}
+static inline void note_guest_copy(size_t size, uintptr_t caller) {
     atomic_fetch_add_explicit(&copy_bytes_total,(uint64_t)size,memory_order_relaxed);
     if (size>=65536) {
         atomic_fetch_add_explicit(&copy_bytes_large,(uint64_t)size,memory_order_relaxed);
         atomic_fetch_add_explicit(&copy_calls_large,1,memory_order_relaxed);
+        note_copy_caller(caller,size);
+    }
+}
+/* Prints the guest callers that moved the most bytes in large copies since the last call, then resets. */
+void runtime_copy_callers_report(uintptr_t image_base) {
+    for (int round=0; round<5; ++round) {
+        int best=-1; uint64_t bb=0;
+        for (int k=0;k<128;++k) {
+            uint64_t b=atomic_load_explicit(&copy_callers[k].bytes,memory_order_relaxed);
+            if (b>bb) { bb=b; best=k; }
+        }
+        if (best<0 || bb<1000000) break;
+        uintptr_t key=copy_callers[best].caller;
+        uint64_t calls=atomic_exchange_explicit(&copy_callers[best].calls,0,memory_order_relaxed);
+        atomic_store_explicit(&copy_callers[best].bytes,0,memory_order_relaxed);
+        fprintf(stderr,"  big copies from image+0x%llx: %.1f MB in %llu copies\n",
+            (unsigned long long)(key-image_base),bb/1e6,(unsigned long long)calls);
     }
 }
 void runtime_copy_stats_take(uint64_t *total, uint64_t *large, uint64_t *calls_large) {
@@ -179,15 +215,15 @@ static ABI __attribute__((noreturn)) void stack_fail(void) {
     exit(22);
 }
 static ABI void *guest_memset(void *dst, int value, size_t size) {
-    note_guest_copy(size);
+    note_guest_copy(size, size>=65536 ? guest_cpu_return_address((uintptr_t)__builtin_return_address(0)) : 0);
     atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memset(dst, value, size);
 }
 static ABI void *guest_memcpy(void *dst, const void *src, size_t size) {
-    note_guest_copy(size);
+    note_guest_copy(size, size>=65536 ? guest_cpu_return_address((uintptr_t)__builtin_return_address(0)) : 0);
     atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memcpy(dst, src, size);
 }
 static ABI void *guest_memmove(void *dst, const void *src, size_t size) {
-    note_guest_copy(size);
+    note_guest_copy(size, size>=65536 ? guest_cpu_return_address((uintptr_t)__builtin_return_address(0)) : 0);
     atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memmove(dst, src, size);
 }
 static ABI int guest_memcmp(const void *a, const void *b, size_t size) {
