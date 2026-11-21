@@ -10,6 +10,7 @@ export PATH=/system/bin
 export LD_LIBRARY_PATH="$runtime/lib:$runtime/python/lib"
 export PYTHONHOME="$runtime/python" PYTHONPATH="$base/scripts" PYTHONUTF8=1
 export FEX_APP_CONFIG_LOCATION="$HOME/.fex-emu/" FEX_APP_DATA_LOCATION="$HOME/.fex-emu/" FEX_APP_CACHE_LOCATION="$HOME/.cache/fex-emu/"
+export GOW3_ASYNC_CAPTURE=1
 export GOW3_BIONIC_RUNNER="$base/run-bionic.sh"
 export GOW3_CONFIG="$base/gow3.ini"
 mkdir -p "$TMPDIR" "$HOME/.fex-emu" "$HOME/.cache/fex-emu" "$base/user" "$base/logs"
