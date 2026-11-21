@@ -75,10 +75,13 @@ export MESA_SHADER_CACHE_DIR="$HOME/.cache/mesa_shader_cache"
 export MESA_SHADER_CACHE_MAX_SIZE=1G
 mkdir -p "$MESA_SHADER_CACHE_DIR"
 
-# 5. Resolução padrão qHD 960x540 (44% menos fillrate que 720p, essencial para CUSA07408 em SoC móvel)
+# 5. Resolução padrão qHD 960x540 via redução de scene targets no host (sem ativar scaled_session)
 export GOW3_SCREEN_W=${GOW3_SCREEN_W:-960}
 export GOW3_SCREEN_H=${GOW3_SCREEN_H:-540}
-export GOW3_RENDER_RES=${GOW3_RENDER_RES:-540p}
+export GOW3_SCENE_SCALE=${GOW3_SCENE_SCALE:-960x540}
+export GOW3_STREAM_MEMORY=${GOW3_STREAM_MEMORY:-cached}
+export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-1}
+unset GOW3_RENDER_RES
 
 # Performance report every 5 s in the log
 if [ -e /sdcard/Download/gow2018_no_frame_stats ]; then unset GOW3_FRAME_STATS
@@ -125,9 +128,12 @@ eval "$("$python" "$base/scripts/launch_env.py" --game "$game" --config "$GOW3_C
 
 # Explicit post-eval guarantee for God of War 2018 (CUSA07408)
 if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow2018-fork-active" ]; then
-    export GOW3_SCREEN_W=960
-    export GOW3_SCREEN_H=540
-    export GOW3_RENDER_RES=540p
+    unset GOW3_RENDER_RES
+    export GOW3_SCREEN_W=${GOW3_SCREEN_W:-960}
+    export GOW3_SCREEN_H=${GOW3_SCREEN_H:-540}
+    export GOW3_SCENE_SCALE=${GOW3_SCENE_SCALE:-960x540}
+    export GOW3_STREAM_MEMORY=${GOW3_STREAM_MEMORY:-cached}
+    export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-1}
     export GOW3_READBACK_LINEAR=0
     export GOW3_DEFERRED_READBACK=0
     export GOW3_STALE_READBACK=0
@@ -138,7 +144,7 @@ if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow
     export GOW3_SHADOWS=0
 fi
 
-echo "GOW3_NATIVE_RESOLUTION: status=${GOW3_RESOLUTION_STATUS:-unknown} patch=${GOW3_PATCH_INPUT_RES:-standard}"
+echo "GOW3_NATIVE_RESOLUTION: status=${GOW3_RESOLUTION_STATUS:-unknown} patch=${GOW3_PATCH_INPUT_RES:-standard} scene_scale=${GOW3_SCENE_SCALE:-off} stream_memory=${GOW3_STREAM_MEMORY:-default}"
 echo "Game language: system_param=${GOW3_LANGUAGE:-1} (1=English, 7=Portuguese, 17=Portuguese-Brazil)"
 
 # Memory pool & refresh

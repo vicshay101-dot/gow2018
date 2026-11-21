@@ -1002,7 +1002,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         // once per display buffer since the HUD draws into it as well.
         // ponytail: assumes flips rotate display buffers; a single-buffer game counts one frame.
         last_display_buffer = regs.color_buffers[0].Address();
+        scene_started = false;
+        upscaler->OnFrameStart();
         NoteFrameStart();
+        static const char* scene_debug = std::getenv("GOW3_SCENE_DEBUG");
+        scene_debug_frame = scene_debug && std::remove(scene_debug) == 0;
+        scene_targets->debug = scene_debug_frame;
     }
     bind_prepared = used_prepared;
     motion_draw = pipeline->GetGraphicsKey().motion_vectors;

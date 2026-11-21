@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <string>
 
 #include <vk_mem_alloc.h>
@@ -154,6 +155,21 @@ void PrintIssues(const char* what, u64 issues) {
     std::printf("\n");
 }
 
+std::optional<SceneResolution::Size> ParseSceneScale(SceneResolution::Size guest) {
+    const char* env = std::getenv("GOW3_SCENE_SCALE");
+    if (!env || !env[0]) return std::nullopt;
+    u32 w = 0, h = 0;
+    if (std::sscanf(env, "%ux%u", &w, &h) == 2 && w >= 2 && h >= 2) {
+        return SceneResolution::Size{w & ~1u, h & ~1u};
+    }
+    char* end = nullptr;
+    const long preset_val = std::strtol(env, &end, 10);
+    if (end != env && *end == '\0' && preset_val >= 1 && preset_val <= 4) {
+        return SceneResolution::ForPreset(int(preset_val), guest);
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& scheduler_,
@@ -199,6 +215,14 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
         if (std::sscanf(res, "%ux%u", &w, &h) == 2 && w && h) {
             render_width = w;
             render_height = h;
+        }
+    }
+    if (!scaled_session) {
+        if (const auto forced = ParseSceneScale(scene_targets.GuestSize());
+            forced && *forced != scene_targets.GuestSize()) {
+            scene_targets.SetSize(*forced);
+            render_width = scene_targets.Size().width;
+            render_height = scene_targets.Size().height;
         }
     }
     // Scene depth copied into the output-size UI depth by a blit (depth aspect).
@@ -322,8 +346,13 @@ bool TemporalUpscaler::OnFrameStart() {
     // Dynamic scene resolution scaling (live preset switching) works on all GPUs.
     // On GPUs without D32S8 blit support, UI depth is cleared instead of copied from scene.
     if (!scaled_session) {
-        scene_targets.SetSize(SceneResolution::ForPreset(active ? preset : 0,
-                                                        {target_width, target_height}));
+        if (const auto forced = ParseSceneScale(scene_targets.GuestSize());
+            forced && !active) {
+            scene_targets.SetSize(*forced);
+        } else {
+            scene_targets.SetSize(SceneResolution::ForPreset(active ? preset : 0,
+                                                            {target_width, target_height}));
+        }
         render_width = scene_targets.Size().width;
         render_height = scene_targets.Size().height;
     }

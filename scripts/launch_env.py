@@ -83,11 +83,11 @@ def derive(game, config, state_path, env):
         if is_gow2018:
             pixel_res = graphics_options.DIRECT_PIXEL_RESOLUTIONS[resolution]
             updates['GOW3_PATCH_INPUT_RES'] = pixel_res
-            updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-direct-game-patch'
+            updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-host-scene-scale'
             w, h = pixel_res.split('x')
             updates['GOW3_SCREEN_W'] = w
             updates['GOW3_SCREEN_H'] = h
-            updates['GOW3_RENDER_RES'] = resolution
+            updates['GOW3_SCENE_SCALE'] = pixel_res
         else:
             try:
                 from patches import CUSA01715_0102_ANDROID_SHA
@@ -117,13 +117,15 @@ def derive(game, config, state_path, env):
         updates['GOW3_GAME_TITLE'] = 'CUSA07408'
         updates['GOW3_GAME_VERSION'] = identity_check.get('app_version') or '01.00'
         updates['GOW3_PATCH_STATUS'] = 'gow2018-fork-active'
+        updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-host-scene-scale'
         updates['GOW3_DEFERRED_READBACK'] = '0'
         updates['GOW3_STALE_READBACK'] = '0'
         updates['GOW3_READBACK_LINEAR'] = '0'
-        updates['GOW3_SCREEN_W'] = '960'
-        updates['GOW3_SCREEN_H'] = '540'
-        updates['GOW3_RENDER_RES'] = '540p'
-        updates['GOW3_PATCH_INPUT_RES'] = '960x540'
+        updates['GOW3_SCREEN_W'] = env.get('GOW3_SCREEN_W', updates.get('GOW3_SCREEN_W', '960'))
+        updates['GOW3_SCREEN_H'] = env.get('GOW3_SCREEN_H', updates.get('GOW3_SCREEN_H', '540'))
+        updates['GOW3_SCENE_SCALE'] = env.get('GOW3_SCENE_SCALE', updates.get('GOW3_SCENE_SCALE', '960x540'))
+        updates['GOW3_PATCH_INPUT_RES'] = updates['GOW3_SCENE_SCALE']
+        updates['GOW3_STREAM_MEMORY'] = env.get('GOW3_STREAM_MEMORY', 'cached')
         updates['GOW3_FAULT_WINDOW'] = '1024'
         updates['GOW3_COPY_GPU_BUFFERS'] = '1'
         updates['GOW3_ASYNC_SHADERS'] = '1'
