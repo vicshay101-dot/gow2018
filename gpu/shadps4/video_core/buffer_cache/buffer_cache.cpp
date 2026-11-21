@@ -159,8 +159,16 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
         const auto* arena = GetArena(first_block, last_block);
 
         // GPU-modified ranges come as many small scattered islands,
-        // so the download is widened to a window around the request
-        constexpr u64 WindowSize = 512_KB;
+        // so the download is widened to a window around the request.
+        // On Android, a wider window coalesces multiple per-frame GPU buffer
+        // downloads into a single scheduler.Finish() without copying extra bytes.
+        static const u64 WindowSize = [] {
+            if (const char* env = std::getenv("GOW3_DOWNLOAD_WINDOW_MB")) {
+                const u64 mb = std::strtoull(env, nullptr, 10);
+                if (mb > 0) return std::clamp<u64>(mb, 1, 64) * 1_MB;
+            }
+            return std::getenv("GOW3_ANDROID_PORT") ? 16_MB : 512_KB;
+        }();
         const VAddr arena_end = arena->cpu_addr + arena->size_bytes;
         const VAddr window_start =
             std::max<VAddr>(Common::AlignDown(device_addr, WindowSize), arena->cpu_addr);

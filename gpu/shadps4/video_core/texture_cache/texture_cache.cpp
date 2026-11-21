@@ -697,6 +697,17 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
     }
 
     if (recreate) {
+        static u32 recreate_logs = 0;
+        if (recreate_logs < 8) {
+            ++recreate_logs;
+            std::printf("GOW3_IMG_RECREATE #%u addr=%#llx %ux%u old_fmt=%s(depth=%d) -> new_fmt=%s(depth=%d) bind=%u\n",
+                        recreate_logs, static_cast<unsigned long long>(requested_info.guest_address),
+                        requested_info.size.width, requested_info.size.height,
+                        vk::to_string(cache_image.info.pixel_format).c_str(),
+                        int(cache_image.info.props.is_depth),
+                        vk::to_string(requested_info.pixel_format).c_str(),
+                        int(requested_info.props.is_depth), static_cast<unsigned>(binding));
+        }
         auto new_info = requested_info;
         new_info.resources = std::max(requested_info.resources, cache_image.info.resources);
         new_info.UpdateSize();
