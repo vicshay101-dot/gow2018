@@ -118,9 +118,9 @@ def derive(game, config, state_path, env):
     updates['GOW3_SHADOWS_REQUESTED'] = 'off' if shadow_requested else 'on'
 
     if is_gow2018:
-        # CUSA07408 fork path: default shadows to OFF via native engine -noshadows arg
+        # CUSA07408 fork path
         shadows_enabled = (env.get('GOW3_SHADOWS') == '1')
-        updates['GOW3_SHADOWS_STATUS'] = 'enabled' if shadows_enabled else 'disabled-by-fork-noshadows'
+        updates['GOW3_SHADOWS_STATUS'] = 'enabled' if shadows_enabled else 'disabled-by-fork'
         updates['GOW3_SHADOWS'] = '1' if shadows_enabled else '0'
         updates['GOW3_SHADOWS_REQUESTED'] = 'on' if shadows_enabled else 'off'
         updates['GOW3_GAME_TITLE'] = 'CUSA07408'
@@ -136,8 +136,7 @@ def derive(game, config, state_path, env):
         updates['GOW3_PATCH_INPUT_RES'] = pixel_res
         updates['GOW3_SCREEN_W'] = w
         updates['GOW3_SCREEN_H'] = h
-        if not shadows_enabled and 'GOW3_GUEST_ARGS' not in env:
-            updates['GOW3_GUEST_ARGS'] = '-noshadows'
+        updates['GOW3_HOT_PAGES'] = env.get('GOW3_HOT_PAGES', '1')
         updates['GOW3_FAULT_WINDOW'] = '1024'
         updates['GOW3_COPY_GPU_BUFFERS'] = '1'
         updates['GOW3_ASYNC_SHADERS'] = '1'

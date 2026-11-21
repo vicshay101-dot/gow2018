@@ -349,9 +349,11 @@ bool TemporalUpscaler::OnFrameStart() {
         if (const auto forced = ParseSceneScale(scene_targets.GuestSize());
             forced && !active) {
             scene_targets.SetSize(*forced);
-        } else {
-            scene_targets.SetSize(SceneResolution::ForPreset(active ? preset : 0,
+        } else if (active) {
+            scene_targets.SetSize(SceneResolution::ForPreset(preset,
                                                             {target_width, target_height}));
+        } else {
+            scene_targets.SetSize(scene_targets.GuestSize());
         }
         render_width = scene_targets.Size().width;
         render_height = scene_targets.Size().height;

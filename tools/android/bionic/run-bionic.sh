@@ -126,7 +126,7 @@ eval "$("$python" "$base/scripts/launch_env.py" --game "$game" --config "$GOW3_C
 
 # Explicit post-eval guarantee for God of War 2018 (CUSA07408)
 if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow2018-fork-active" ]; then
-    unset GOW3_RENDER_RES GOW3_SCENE_SCALE GOW3_STREAM_MEMORY
+    unset GOW3_RENDER_RES GOW3_SCENE_SCALE GOW3_STREAM_MEMORY GOW3_GUEST_ARGS
     export GOW3_PATCH_INPUT_RES=${GOW3_PATCH_INPUT_RES:-1024x576}
     export GOW3_SCREEN_W=${GOW3_PATCH_INPUT_RES%x*}
     export GOW3_SCREEN_H=${GOW3_PATCH_INPUT_RES#*x}
@@ -134,16 +134,16 @@ if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow
     export GOW3_READBACK_LINEAR=0
     export GOW3_DEFERRED_READBACK=0
     export GOW3_STALE_READBACK=0
+    export GOW3_HOT_PAGES=${GOW3_HOT_PAGES:-1}
     export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-1}
     export GOW3_FAULT_WINDOW=1024
     export GOW3_COPY_GPU_BUFFERS=1
     export GOW3_ASYNC_SHADERS=1
     export GOW3_ASYNC_CAPTURE=1
     export GOW3_SHADOWS=0
-    export GOW3_GUEST_ARGS="${GOW3_GUEST_ARGS:--noshadows}"
 fi
 
-echo "GOW3_NATIVE_RESOLUTION: status=${GOW3_RESOLUTION_STATUS:-unknown} patch=${GOW3_PATCH_INPUT_RES:-standard} readbacks=${GOW3_READBACKS:-1} guest_args='${GOW3_GUEST_ARGS:-}'"
+echo "GOW3_NATIVE_RESOLUTION: status=${GOW3_RESOLUTION_STATUS:-unknown} patch=${GOW3_PATCH_INPUT_RES:-standard} readbacks=${GOW3_READBACKS:-1} hot_pages=${GOW3_HOT_PAGES:-0}"
 echo "Game language: system_param=${GOW3_LANGUAGE:-1} (1=English, 7=Portuguese, 17=Portuguese-Brazil)"
 
 # Memory pool & refresh

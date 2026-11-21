@@ -23,22 +23,25 @@ def game_app_version(game):
     return game_sfo(game).get('APP_VER')
 
 
+PT_SCE_RELRO=0x61000010
+
+
 def eboot_segments(elf):
     phoff,=struct.unpack_from('<Q',elf,0x20)
     phentsize,phnum=struct.unpack_from('<HH',elf,0x36)
     segments=[]
     for i in range(phnum):
         kind,_,_,vaddr,_,_,memsz,_=struct.unpack_from('<IIQQQQQQ',elf,phoff+i*phentsize)
-        if kind==1: segments.append((vaddr,vaddr+memsz))
+        if kind in (1, PT_SCE_RELRO): segments.append((vaddr,vaddr+memsz))
     return segments
 
 
 def eboot_image(elf):
-    """The PT_LOAD file bytes of eboot.elf at their virtual addresses (image offsets)."""
+    """The PT_LOAD and PT_SCE_RELRO file bytes of eboot.elf at their virtual addresses."""
     phoff,=struct.unpack_from('<Q',elf,0x20)
     phentsize,phnum=struct.unpack_from('<HH',elf,0x36)
     loads=[struct.unpack_from('<IIQQQQQQ',elf,phoff+i*phentsize) for i in range(phnum)]
-    loads=[(vaddr,offset,filesz) for kind,_,offset,vaddr,_,filesz,_,_ in loads if kind==1]
+    loads=[(vaddr,offset,filesz) for kind,_,offset,vaddr,_,filesz,_,_ in loads if kind in (1, PT_SCE_RELRO)]
     image=bytearray(max(vaddr+filesz for vaddr,_,filesz in loads))
     for vaddr,offset,filesz in loads: image[vaddr:vaddr+filesz]=elf[offset:offset+filesz]
     return bytes(image)

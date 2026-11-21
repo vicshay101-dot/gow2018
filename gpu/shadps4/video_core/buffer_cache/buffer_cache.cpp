@@ -124,9 +124,15 @@ void BufferCache::RunGuestCopy(const Gow3Copy::Item& item) {
     buffer->Flush(dst - buffer->mapped_data.data(), item.size);
 }
 
-// Small guest copies run on the recording thread (it spins for work: no wakeup, and it is
-// idle most of the time); PoolSmallCopies (toggle 524288) batches them for the copy threads.
+// Small guest copies run on the recording thread when the draw pipe is active; on Android's
+// direct path (no DrawPipe), running them inline avoids 90+ cross-thread WaitHostCopies stalls
+// and KickRecording flushes per frame on ReleaseMem/WriteData packets.
 void BufferCache::SmallGuestCopy(const Gow3Copy::Item& item) {
+    static const bool android_direct = std::getenv("GOW3_ANDROID_PORT") != nullptr;
+    if (android_direct) {
+        item.run(item);
+        return;
+    }
     if (scheduler.IsRecordingDeferred() && !Gow3Toggle::Disabled(Gow3Toggle::PoolSmallCopies)) {
         scheduler.RecordHostCopy([item] { item.run(item); });
         return;
