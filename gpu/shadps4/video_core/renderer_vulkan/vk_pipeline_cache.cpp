@@ -587,67 +587,120 @@ struct CompileTimer {
 };
 } // namespace
 
+static bool GowAsyncCaptureEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("GOW3_ASYNC_CAPTURE");
+        const bool on = value && value[0] == '1';
+        if (on) {
+            std::printf("gow3: GOW3_ASYNC_CAPTURE=1, shader captures run in the background\n");
+        }
+        return on;
+    }();
+    return enabled;
+}
+
 bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage,
-                                 const Shader::ShaderParams& params,
-                                 Shader::RuntimeInfo runtime_info,
-                                 Shader::Backend::Bindings binding, size_t permutation,
-                                 bool initial,
-                                 std::optional<Shader::StageSpecialization> specialization) {
+                                const Shader::ShaderParams& params,
+                                Shader::RuntimeInfo runtime_info,
+                                Shader::Backend::Bindings binding, size_t permutation,
+                                bool initial,
+                                std::optional<Shader::StageSpecialization> specialization) {
     if (!compiler->HasCapacity()) {
         return false;
     }
-    PhaseTimer snapshot{g_gow3_snapshot_ns};
-    auto build = std::make_shared<AsyncShaderCompilation>();
-    build->device = instance.GetDevice();
-    build->code.assign(params.code.begin(), params.code.end());
-    build->user_data.assign(params.user_data.begin(), params.user_data.end());
-    build->info = Shader::Info(stage, l_stage, params);
-    build->info.user_data = build->user_data;
-    build->runtime = runtime_info;
-    if (stage == HwStage::Geometry && !runtime_info.hw.gs.vs_copy.empty()) {
-        build->geometry_code.assign(runtime_info.hw.gs.vs_copy.begin(), runtime_info.hw.gs.vs_copy.end());
-        build->runtime.hw.gs.vs_copy = build->geometry_code;
-    }
-    build->binding = binding;
-    build->permutation = permutation;
-    build->initial = initial;
-    if (specialization) {
-        build->spec = *specialization;
-    }
-    build->pool_cache = &compiler_pools;
-    snapshot.Stop();
-    AsyncJob<bool> capture_job;
-    if (!capture_job.Start(*capture_compiler, [this, build, binding] {
-        PhaseTimer capture{g_gow3_capture_ns};
-        auto [pools, reused] = compiler_pools.Acquire();
-        build->pools = std::move(pools);
-        if (reused) {
-            ++g_gow3_pool_reuses;
-        }
-        // gow3: the GPU thread waits until all guest reads and specialization are captured.
-        build->ir.emplace(Shader::TranslateProgram(build->code, *build->pools, build->info,
-                                                   build->runtime, profile));
-        build->spec = Shader::StageSpecialization(build->info, build->runtime, profile, binding);
-        build->fetch.Capture(build->info);
-        return true;
-    })) {
-        return false;
-    }
-    {
-        PhaseTimer waiting{g_gow3_guest_wait_ns};
-        capture_job.Wait();
-    }
-    if (!capture_job.Poll()) {
-        if (initial) {
+    const bool async_capture = GowAsyncCaptureEnabled();
+    // Bookkeeping for a capture that failed, shared by the blocking and the deferred path.
+    const auto capture_failed = [&program, &params](
+                                    bool first, size_t perm,
+                                    std::optional<Shader::StageSpecialization>& spec,
+                                    const std::string& error) {
+        if (first) {
             program.compilation_failed = true;
         } else {
-            specialization->info = &program.info;
-            program.failed_permutations.push_back(std::move(*specialization));
+            spec->info = &program.info;
+            program.failed_permutations.push_back(std::move(*spec));
         }
-        LOG_ERROR(Render_Vulkan, "gow3: shader {:#x}/{} capture failed: {}", params.hash,
-                  permutation, capture_job.Error());
-        return false;
+        LOG_ERROR(Render_Vulkan, "gow3: shader {:#x}/{} capture failed: {}", params.hash, perm,
+                  error);
+    };
+
+    std::shared_ptr<AsyncShaderCompilation> build;
+    if (async_capture && program.capturing) {
+        // The capture started on an earlier draw: poll it, never start a second one.
+        auto& capturing = *program.capturing;
+        if (!capturing.job.Poll()) {
+            if (!capturing.job.Failed()) {
+                return false; // still capturing: the caller skips this draw
+            }
+            capture_failed(capturing.initial, capturing.permutation, capturing.specialization,
+                           capturing.job.Error());
+            program.capturing.reset();
+            return false;
+        }
+        build = std::move(capturing.build);
+        program.capturing.reset();
+    } else {
+        PhaseTimer snapshot{g_gow3_snapshot_ns};
+        build = std::make_shared<AsyncShaderCompilation>();
+        build->device = instance.GetDevice();
+        build->code.assign(params.code.begin(), params.code.end());
+        build->user_data.assign(params.user_data.begin(), params.user_data.end());
+        build->info = Shader::Info(stage, l_stage, params);
+        build->info.user_data = build->user_data;
+        build->runtime = runtime_info;
+        if (stage == HwStage::Geometry && !runtime_info.hw.gs.vs_copy.empty()) {
+            build->geometry_code.assign(runtime_info.hw.gs.vs_copy.begin(),
+                                        runtime_info.hw.gs.vs_copy.end());
+            build->runtime.hw.gs.vs_copy = build->geometry_code;
+        }
+        build->binding = binding;
+        build->permutation = permutation;
+        build->initial = initial;
+        if (specialization) {
+            build->spec = *specialization;
+        }
+        build->pool_cache = &compiler_pools;
+        snapshot.Stop();
+        auto capture_task = [this, build, binding] {
+            PhaseTimer capture{g_gow3_capture_ns};
+            auto [pools, reused] = compiler_pools.Acquire();
+            build->pools = std::move(pools);
+            if (reused) {
+                ++g_gow3_pool_reuses;
+            }
+            // gow3: the GPU thread waits until all guest reads and specialization are captured.
+            build->ir.emplace(Shader::TranslateProgram(build->code, *build->pools, build->info,
+                                                       build->runtime, profile));
+            build->spec = Shader::StageSpecialization(build->info, build->runtime, profile, binding);
+            build->fetch.Capture(build->info);
+            return true;
+        };
+        if (async_capture) {
+            auto capturing = std::make_unique<Program::PendingCapture>();
+            capturing->build = build;
+            capturing->initial = initial;
+            capturing->permutation = permutation;
+            capturing->specialization = std::move(specialization);
+            if (!capturing->job.Start(*capture_compiler, std::move(capture_task))) {
+                return false;
+            }
+            program.capturing = std::move(capturing);
+            return false;
+        }
+        AsyncJob<bool> capture_job;
+        if (!capture_job.Start(*capture_compiler, std::move(capture_task))) {
+            return false;
+        }
+        {
+            PhaseTimer waiting{g_gow3_guest_wait_ns};
+            capture_job.Wait();
+        }
+        if (!capture_job.Poll()) {
+            capture_failed(initial, permutation, specialization, capture_job.Error());
+            return false;
+        }
     }
+
     const bool queued = build->job.Start(*compiler, [this, build] {
         PhaseTimer compile{g_gow3_async_ns};
         Shader::Gcn::ScopedFetchShaderSnapshot snapshot{build->fetch};

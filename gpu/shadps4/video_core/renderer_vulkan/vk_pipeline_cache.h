@@ -61,6 +61,17 @@ struct Program {
     std::shared_ptr<AsyncShaderCompilation> pending;
     bool compilation_failed = false;
     std::vector<Shader::StageSpecialization> failed_permutations;
+    /// gow3: GOW3_ASYNC_CAPTURE=1: a shader whose capture runs in the background. QueueShader
+    /// polls it on later draws instead of blocking the GPU thread, and the capture owns the
+    /// arguments the compile step needs.
+    struct PendingCapture {
+        std::shared_ptr<AsyncShaderCompilation> build;
+        AsyncJob<bool> job;
+        bool initial = false;
+        size_t permutation = 0;
+        std::optional<Shader::StageSpecialization> specialization;
+    };
+    std::unique_ptr<PendingCapture> capturing;
 
     Program() = default;
     Program(Shader::HwStage stage, Shader::SwStage l_stage, Shader::ShaderParams params)
