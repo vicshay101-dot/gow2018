@@ -109,12 +109,25 @@ def derive(game, config, state_path, env):
     updates['GOW3_SHADOWS_REQUESTED'] = 'off' if shadow_requested else 'on'
 
     if is_gow2018:
-        # CUSA07408 fork path: cleanly honor shadow disable and performance settings
-        updates['GOW3_SHADOWS_STATUS'] = 'disabled-by-fork' if shadow_requested else 'enabled'
-        updates['GOW3_SHADOWS'] = '0' if shadow_requested else '1'
+        # CUSA07408 fork path: default shadows to OFF for performance unless explicitly requested ON
+        shadows_enabled = (env.get('GOW3_SHADOWS') == '1')
+        updates['GOW3_SHADOWS_STATUS'] = 'enabled' if shadows_enabled else 'disabled-by-fork'
+        updates['GOW3_SHADOWS'] = '1' if shadows_enabled else '0'
+        updates['GOW3_SHADOWS_REQUESTED'] = 'on' if shadows_enabled else 'off'
         updates['GOW3_GAME_TITLE'] = 'CUSA07408'
         updates['GOW3_GAME_VERSION'] = identity_check.get('app_version') or '01.00'
         updates['GOW3_PATCH_STATUS'] = 'gow2018-fork-active'
+        updates['GOW3_DEFERRED_READBACK'] = '0'
+        updates['GOW3_STALE_READBACK'] = '0'
+        updates['GOW3_READBACK_LINEAR'] = '0'
+        updates['GOW3_SCREEN_W'] = '960'
+        updates['GOW3_SCREEN_H'] = '540'
+        updates['GOW3_RENDER_RES'] = '540p'
+        updates['GOW3_PATCH_INPUT_RES'] = '960x540'
+        updates['GOW3_FAULT_WINDOW'] = '1024'
+        updates['GOW3_COPY_GPU_BUFFERS'] = '1'
+        updates['GOW3_ASYNC_SHADERS'] = '1'
+        updates['GOW3_ASYNC_CAPTURE'] = '1'
         reason = 'gow2018-fork-active'
         dmem = 7104
         vblank = 60
