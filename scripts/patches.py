@@ -496,7 +496,7 @@ def main():
     profile=game_profile_for(a.game_dir)
     if not profile:
         writes = []
-        if title == 'CUSA07408':
+        if title == 'CUSA07408' and os.environ.get('GOW3_GOW2018_EBOOT_RES') == '1':
             res = os.environ.get('GOW3_PATCH_INPUT_RES', '')
             elf_path = a.out / 'eboot.elf'
             if res and elf_path.is_file():
