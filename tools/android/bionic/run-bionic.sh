@@ -41,6 +41,7 @@ export GOW3_PRESENT_SOCKET="$base/present.sock"
 export GOW3_READBACK_LINEAR=1
 export GOW3_COPY_GPU_BUFFERS=1
 export GOW3_FAULT_WINDOW=64
+export GOW3_GPU_COMPILER_WORKERS=3
 # Performance report every 5 s in the log ("Frame stats:", "Frame pacing:"): FPS, worst frame,
 # shader compiles, GPU thread time per draw and idle share. On by default while the GoW 2018
 # frame rate is being tuned; an empty file /sdcard/Download/gow2018_no_frame_stats turns it off.
