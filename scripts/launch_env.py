@@ -127,7 +127,7 @@ def derive(game, config, state_path, env):
         updates['GOW3_GAME_VERSION'] = identity_check.get('app_version') or '01.00'
         updates['GOW3_PATCH_STATUS'] = 'gow2018-fork-active'
         updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-native-eboot-patch'
-        updates['GOW3_READBACKS'] = env.get('GOW3_READBACKS', '0')
+        updates['GOW3_READBACKS'] = env.get('GOW3_READBACKS', '1')
         updates['GOW3_DEFERRED_READBACK'] = '0'
         updates['GOW3_STALE_READBACK'] = '0'
         updates['GOW3_READBACK_LINEAR'] = '0'
@@ -137,6 +137,7 @@ def derive(game, config, state_path, env):
         updates['GOW3_SCREEN_W'] = w
         updates['GOW3_SCREEN_H'] = h
         updates['GOW3_HOT_PAGES'] = env.get('GOW3_HOT_PAGES', '1')
+        updates['GOW3_PREP_WORKERS'] = env.get('GOW3_PREP_WORKERS', '2')
         updates['GOW3_FAULT_WINDOW'] = '1024'
         updates['GOW3_COPY_GPU_BUFFERS'] = '1'
         updates['GOW3_ASYNC_SHADERS'] = '1'
