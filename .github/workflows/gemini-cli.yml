@@ -1,0 +1,36 @@
+name: Gemini CLI Assistant
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  gemini-cli:
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.body, '@gemini-cli')) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@gemini-cli')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@gemini-cli'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gemini CLI
+        uses: google-github-actions/run-gemini-cli@v0
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        with:
+          prompt: |
+            Você é o assistente de código do repositório vicshay101-dot/gow2018 (port Android do God of War III CUSA07408 para POCO F6 / Adreno 735 / FEXCore / Mesa Turnip).
+            Analise o pedido feito na Issue/comentário abaixo, faça as alterações necessárias nos arquivos, crie uma nova branch e abra um Pull Request com as mudanças explicadas em português.
+            Pedido: ${{ github.event.comment.body || github.event.issue.body }}
