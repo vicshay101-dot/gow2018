@@ -420,6 +420,59 @@ def android_native_resolution_writes(xml, image, segments, sha, render_res, patc
                        'verified_sites': [hex(site) for site in CUSA01715_0102_SITES]}
 
 
+GOW2018_RES_SIGNATURES = (
+    # Master PS4 Base resolution initializer (mov r13d, 1920; mov r15d, 1080).
+    ('master_base',
+     '83 3d ?? ?? ?? ?? 01 75 15 41 bd 00 0f 00 00 41 bf 70 08 00 00 '
+     'c6 05 ?? ?? ?? ?? 01 eb 0c 41 bd 80 07 00 00 41 bf 38 04 00 00',
+     ((32, 'w'), (38, 'h'))),
+    # Internal render-target table allocator width loops (mov eax, 1920 before cmovg).
+    ('rt_loop_1',
+     '3d ff 03 00 00 b8 80 07 00 00 0f 4f 44 24 0c 31 d2 8d 44 07 ff f7 f7 41 89 c2 85 c9 7f 0b',
+     ((6, 'w'),)),
+    ('rt_loop_2',
+     '3d ff 03 00 00 b8 80 07 00 00 0f 4f 44 24 0c 31 d2 8d 44 07 ff f7 f7 41 89 c2 85 c9 7f 0f',
+     ((6, 'w'),)),
+    # Mirror/refraction literal 1920x1080 entries in the render-target table.
+    ('rt_literals',
+     '1d 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? 80 07 00 00 38 04 00 00 05 00 00 00 00 00 00 00 '
+     '1e 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? 80 07 00 00 38 04 00 00 1d 00 00 00 00 00 00 00 '
+     '1f 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? 80 07 00 00 38 04 00 00 1d 00 00 00 00 00 00 00 '
+     '20 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? 80 07 00 00 38 04 00 00 05 00 00 00 00 00 00 00',
+     ((16, 'w'), (20, 'h'), (48, 'w'), (52, 'h'), (80, 'w'), (84, 'h'), (112, 'w'), (116, 'h'))),
+)
+
+
+def compile_gow2018_resolution_patches(image, segments, render_res):
+    """Return signature-verified native resolution writes for God of War (2018) CUSA07408."""
+    if not render_res:
+        return []
+    match = re.fullmatch(r'([0-9]{3,4})x([0-9]{3,4})', render_res.strip())
+    if not match:
+        raise ValueError(f'invalid CUSA07408 resolution {render_res!r}')
+    width, height = map(int, match.groups())
+    if (width, height) == (1920, 1080):
+        return []
+    if not (256 <= width <= 1920 and 144 <= height <= 1080 and width % 8 == 0 and height % 8 == 0):
+        raise ValueError(f'CUSA07408 resolution must be divisible by 8 (got {width}x{height})')
+    writes = []
+    for name, pattern_text, fields in GOW2018_RES_SIGNATURES:
+        found = find_pattern(image, parse_pattern(pattern_text))
+        if len(found) != 1:
+            raise LookupError(f'CUSA07408 {name} signature match count={len(found)}')
+        base = found[0]
+        for delta, kind in fields:
+            off = base + delta
+            if not any(start <= off and off + 4 <= end for start, end in segments):
+                raise ValueError(f'CUSA07408 {name}+{delta} outside PT_LOAD segments')
+            expected = 1920 if kind == 'w' else 1080
+            actual, = struct.unpack_from('<I', image, off)
+            if actual != expected:
+                raise ValueError(f'CUSA07408 {name}+{delta}: expected {expected}, got {actual}')
+            writes.append((off, struct.pack('<I', width if kind == 'w' else height)))
+    return writes
+
+
 def write_patches(out, writes):
     # G3PATCH2: the patch base, so the loader can rebase pointers the patches write into
     # relocated slots.
@@ -439,8 +492,21 @@ def main():
     title=game_title_id(a.game_dir)
     profile=game_profile_for(a.game_dir)
     if not profile:
-        write_patches(a.out,[])
-        print(f'Patches: no patch profile for {title}: none applied')
+        writes = []
+        if title == 'CUSA07408':
+            res = os.environ.get('GOW3_PATCH_INPUT_RES', '')
+            elf_path = a.out / 'eboot.elf'
+            if res and elf_path.is_file():
+                try:
+                    elf = elf_path.read_bytes()
+                    writes = compile_gow2018_resolution_patches(
+                        eboot_image(elf), eboot_segments(elf), res)
+                    print(f'Patches: CUSA07408 native render {res} ({len(writes)} writes)')
+                except (ValueError, LookupError) as error:
+                    print(f'Patches: CUSA07408 resolution skipped ({error})', file=sys.stderr)
+        write_patches(a.out, writes)
+        if not writes:
+            print(f'Patches: no patch profile for {title}: none applied')
         return
     ids,xml,tag,_name=profile
     sha=eboot_sha256(a.game_dir)

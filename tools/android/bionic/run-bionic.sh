@@ -75,13 +75,11 @@ export MESA_SHADER_CACHE_DIR="$HOME/.cache/mesa_shader_cache"
 export MESA_SHADER_CACHE_MAX_SIZE=1G
 mkdir -p "$MESA_SHADER_CACHE_DIR"
 
-# 5. Resolução padrão qHD 960x540 via redução de scene targets no host (sem ativar scaled_session)
-export GOW3_SCREEN_W=${GOW3_SCREEN_W:-960}
-export GOW3_SCREEN_H=${GOW3_SCREEN_H:-540}
-export GOW3_SCENE_SCALE=${GOW3_SCENE_SCALE:-960x540}
-export GOW3_STREAM_MEMORY=${GOW3_STREAM_MEMORY:-cached}
+# 5. Resolução nativa 1024x576 (16:9 exato, múltiplo de 64, 3.5x menos pixels que 1080p) via patch de eboot
+#    Sem SceneTargets proxy (quebrava Z-prepass -> tela azul) e sem stream cached (piorava host copies no Turnip)
+unset GOW3_RENDER_RES GOW3_SCENE_SCALE GOW3_STREAM_MEMORY
+export GOW3_READBACKS=${GOW3_READBACKS:-0}
 export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-1}
-unset GOW3_RENDER_RES
 
 # Performance report every 5 s in the log
 if [ -e /sdcard/Download/gow2018_no_frame_stats ]; then unset GOW3_FRAME_STATS
@@ -128,23 +126,24 @@ eval "$("$python" "$base/scripts/launch_env.py" --game "$game" --config "$GOW3_C
 
 # Explicit post-eval guarantee for God of War 2018 (CUSA07408)
 if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow2018-fork-active" ]; then
-    unset GOW3_RENDER_RES
-    export GOW3_SCREEN_W=${GOW3_SCREEN_W:-960}
-    export GOW3_SCREEN_H=${GOW3_SCREEN_H:-540}
-    export GOW3_SCENE_SCALE=${GOW3_SCENE_SCALE:-960x540}
-    export GOW3_STREAM_MEMORY=${GOW3_STREAM_MEMORY:-cached}
-    export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-1}
+    unset GOW3_RENDER_RES GOW3_SCENE_SCALE GOW3_STREAM_MEMORY
+    export GOW3_PATCH_INPUT_RES=${GOW3_PATCH_INPUT_RES:-1024x576}
+    export GOW3_SCREEN_W=${GOW3_PATCH_INPUT_RES%x*}
+    export GOW3_SCREEN_H=${GOW3_PATCH_INPUT_RES#*x}
+    export GOW3_READBACKS=0
     export GOW3_READBACK_LINEAR=0
     export GOW3_DEFERRED_READBACK=0
     export GOW3_STALE_READBACK=0
+    export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-1}
     export GOW3_FAULT_WINDOW=1024
     export GOW3_COPY_GPU_BUFFERS=1
     export GOW3_ASYNC_SHADERS=1
     export GOW3_ASYNC_CAPTURE=1
     export GOW3_SHADOWS=0
+    export GOW3_GUEST_ARGS="${GOW3_GUEST_ARGS:--noshadows}"
 fi
 
-echo "GOW3_NATIVE_RESOLUTION: status=${GOW3_RESOLUTION_STATUS:-unknown} patch=${GOW3_PATCH_INPUT_RES:-standard} scene_scale=${GOW3_SCENE_SCALE:-off} stream_memory=${GOW3_STREAM_MEMORY:-default}"
+echo "GOW3_NATIVE_RESOLUTION: status=${GOW3_RESOLUTION_STATUS:-unknown} patch=${GOW3_PATCH_INPUT_RES:-standard} readbacks=${GOW3_READBACKS:-1} guest_args='${GOW3_GUEST_ARGS:-}'"
 echo "Game language: system_param=${GOW3_LANGUAGE:-1} (1=English, 7=Portuguese, 17=Portuguese-Brazil)"
 
 # Memory pool & refresh

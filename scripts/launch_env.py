@@ -78,16 +78,25 @@ def derive(game, config, state_path, env):
     is_gow2018 = (title_id == 'CUSA07408' or 'CUSA07408' in str(game))
     resolution = graphics.get('render_resolution', 'native')
 
-    # Allow custom direct resolutions for CUSA07408 (GoW 2018 fork support)
+    # Allow custom direct resolutions for CUSA07408 (GoW 2018 fork support).
+    # GoW 2018 divides render targets by 8 (depthBy8/flagsby8/bloom8th), so map
+    # presets to exact 16:9 8-aligned dimensions patched natively in eboot.elf.
+    gow2018_resolutions = {
+        '240p': '512x288',
+        '360p': '640x360',
+        '424p': '768x432',
+        '480p': '896x504',
+        '540p': '1024x576',
+        '720p': '1024x576',
+    }
     if android_port and resolution in graphics_options.DIRECT_RESOLUTIONS:
         if is_gow2018:
-            pixel_res = graphics_options.DIRECT_PIXEL_RESOLUTIONS[resolution]
+            pixel_res = gow2018_resolutions.get(resolution, '1024x576')
             updates['GOW3_PATCH_INPUT_RES'] = pixel_res
-            updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-host-scene-scale'
+            updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-native-eboot-patch'
             w, h = pixel_res.split('x')
             updates['GOW3_SCREEN_W'] = w
             updates['GOW3_SCREEN_H'] = h
-            updates['GOW3_SCENE_SCALE'] = pixel_res
         else:
             try:
                 from patches import CUSA01715_0102_ANDROID_SHA
@@ -109,23 +118,26 @@ def derive(game, config, state_path, env):
     updates['GOW3_SHADOWS_REQUESTED'] = 'off' if shadow_requested else 'on'
 
     if is_gow2018:
-        # CUSA07408 fork path: default shadows to OFF for performance unless explicitly requested ON
+        # CUSA07408 fork path: default shadows to OFF via native engine -noshadows arg
         shadows_enabled = (env.get('GOW3_SHADOWS') == '1')
-        updates['GOW3_SHADOWS_STATUS'] = 'enabled' if shadows_enabled else 'disabled-by-fork'
+        updates['GOW3_SHADOWS_STATUS'] = 'enabled' if shadows_enabled else 'disabled-by-fork-noshadows'
         updates['GOW3_SHADOWS'] = '1' if shadows_enabled else '0'
         updates['GOW3_SHADOWS_REQUESTED'] = 'on' if shadows_enabled else 'off'
         updates['GOW3_GAME_TITLE'] = 'CUSA07408'
         updates['GOW3_GAME_VERSION'] = identity_check.get('app_version') or '01.00'
         updates['GOW3_PATCH_STATUS'] = 'gow2018-fork-active'
-        updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-host-scene-scale'
+        updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-native-eboot-patch'
+        updates['GOW3_READBACKS'] = env.get('GOW3_READBACKS', '0')
         updates['GOW3_DEFERRED_READBACK'] = '0'
         updates['GOW3_STALE_READBACK'] = '0'
         updates['GOW3_READBACK_LINEAR'] = '0'
-        updates['GOW3_SCREEN_W'] = env.get('GOW3_SCREEN_W', updates.get('GOW3_SCREEN_W', '960'))
-        updates['GOW3_SCREEN_H'] = env.get('GOW3_SCREEN_H', updates.get('GOW3_SCREEN_H', '540'))
-        updates['GOW3_SCENE_SCALE'] = env.get('GOW3_SCENE_SCALE', updates.get('GOW3_SCENE_SCALE', '960x540'))
-        updates['GOW3_PATCH_INPUT_RES'] = updates['GOW3_SCENE_SCALE']
-        updates['GOW3_STREAM_MEMORY'] = env.get('GOW3_STREAM_MEMORY', 'cached')
+        pixel_res = env.get('GOW3_PATCH_INPUT_RES') or updates.get('GOW3_PATCH_INPUT_RES') or '1024x576'
+        w, h = pixel_res.split('x') if 'x' in pixel_res else ('1024', '576')
+        updates['GOW3_PATCH_INPUT_RES'] = pixel_res
+        updates['GOW3_SCREEN_W'] = w
+        updates['GOW3_SCREEN_H'] = h
+        if not shadows_enabled and 'GOW3_GUEST_ARGS' not in env:
+            updates['GOW3_GUEST_ARGS'] = '-noshadows'
         updates['GOW3_FAULT_WINDOW'] = '1024'
         updates['GOW3_COPY_GPU_BUFFERS'] = '1'
         updates['GOW3_ASYNC_SHADERS'] = '1'

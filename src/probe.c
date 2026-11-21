@@ -1270,7 +1270,25 @@ int main(int argc, char **argv) {
     { pthread_t hb_; if (!pthread_create(&hb_,NULL,heartbeat_thread,NULL)) pthread_detach(hb_); }
 #endif
     /* Static: the host stack may lie above 47-bit guest addresses (arm64 hosts). */
-    static struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};
+    static struct { uint64_t argc; const char *argv[32]; } params = {1, {"/app0/eboot.bin", NULL}};
+    static char guest_args_buf[1024];
+    const char *extra_args = getenv("GOW3_GUEST_ARGS");
+    if (extra_args && extra_args[0]) {
+        strncpy(guest_args_buf, extra_args, sizeof(guest_args_buf) - 1);
+        guest_args_buf[sizeof(guest_args_buf) - 1] = '\0';
+        char *p = guest_args_buf;
+        while (*p && params.argc < 30) {
+            while (*p == ' ' || *p == '\t') ++p;
+            if (!*p) break;
+            params.argv[params.argc++] = p;
+            while (*p && *p != ' ' && *p != '\t') ++p;
+            if (*p) *p++ = '\0';
+        }
+        params.argv[params.argc] = NULL;
+        params.argv[params.argc + 1] = NULL;
+        printf("Guest args (%" PRIu64 "): %s\n", params.argc - 1, extra_args);
+    }
+    runtime_set_guest_args((int)params.argc, params.argv);
 #ifdef _WIN32
     typedef void (ABI *Entry)(void *, void (ABI *)(void));
     ((Entry)(image + entry))(&params, guest_exit);
