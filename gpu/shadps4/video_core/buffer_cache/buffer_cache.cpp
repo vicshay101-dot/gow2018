@@ -185,11 +185,23 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
             const VAddr page_end =
                 std::min<VAddr>(Common::AlignUp(device_addr + size, 4096ULL), arena_end);
             const u64 page_size = page_end - page_start;
+            if (AsyncBufferReadbackEnabled()) {
+                RetireAsyncDownloads();
+            }
             bool has_pending = false;
             for (const auto& entry : pending_async_downloads) {
                 if (entry.window_start < page_end && page_start < entry.window_end) {
-                    has_pending = true;
-                    break;
+                    for (const auto& copy : entry.copies) {
+                        const VAddr copy_start = entry.arena_base + copy.srcOffset;
+                        const VAddr copy_end = copy_start + copy.size;
+                        if (copy_start < page_end && page_start < copy_end) {
+                            has_pending = true;
+                            break;
+                        }
+                    }
+                    if (has_pending) {
+                        break;
+                    }
                 }
             }
             if (!has_pending && !gpu_modified_ranges.Intersects(page_start, page_size)) {
