@@ -111,6 +111,19 @@ public:
         slot_images[image_id].tick_accessed_last = scheduler.CurrentTick();
     }
 
+    [[nodiscard]] bool NeedsPairedSiblingSync(ImageId image_id) const noexcept {
+        const Image& image = slot_images[image_id];
+        if (!image.paired_sibling_id) {
+            return false;
+        }
+        const Image& sibling = slot_images[image.paired_sibling_id];
+        return True(sibling.flags & ImageFlagBits::Registered) &&
+               sibling.image_uid == image.paired_sibling_uid &&
+               sibling.alias_generation > image.alias_generation;
+    }
+
+    void SyncPairedSibling(ImageId image_id);
+
     TileManager& GetTileManager() noexcept {
         return tile_manager;
     }

@@ -2691,6 +2691,7 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
         const bool proxies_on = !Gow3Toggle::Disabled(Gow3Toggle::SampleSceneProxies);
         if (image.backing != entry.backing || image.binding.needs_rebind ||
             image.binding.is_target || !texture_cache.IsUpToDate(entry.id) ||
+            texture_cache.NeedsPairedSiblingSync(entry.id) ||
             (entry.proxy ? !proxies_on ||
                                !scene_targets->ProxyCurrent(image, entry.range.base.level,
                                                             entry.range.extent.levels)

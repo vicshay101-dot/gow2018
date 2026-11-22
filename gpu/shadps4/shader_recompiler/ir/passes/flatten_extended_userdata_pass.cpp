@@ -726,6 +726,8 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     case IR::Opcode::GetUserData:
     case IR::Opcode::ReadConst:
     case IR::Opcode::ReadConstBuffer:
+    case IR::Opcode::ReadFirstLane:
+    case IR::Opcode::Phi:
     case IR::Opcode::IAdd32:
     case IR::Opcode::ISub32:
     case IR::Opcode::IMul32:
@@ -753,6 +755,10 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
     case IR::Opcode::GetUserData:
         c.mov(reg, ptr[rsi + (static_cast<u32>(inst->Arg(0).ScalarReg()) << 2)]);
         return true;
+    case IR::Opcode::ReadFirstLane:
+        return inst->Arg(0).IsImmediate()
+                   ? (c.mov(reg, inst->Arg(0).U32()), true)
+                   : ComputeOffset(c, reg, pass_info, inst->Arg(0));
     case IR::Opcode::ReadConst:
     case IR::Opcode::ReadConstBuffer:
         if (u16 offset = GetFlatbufOffset(pass_info.DeduplicateInstruction(inst)); offset != 0) {
@@ -946,6 +952,8 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
     case IR::Opcode::GetUserData:
         p.insert(p.end(), {OpUserData, static_cast<u32>(inst->Arg(0).ScalarReg())});
         return true;
+    case IR::Opcode::ReadFirstLane:
+        return EmitOperand(p, pass_info, inst->Arg(0));
     case IR::Opcode::ReadConst:
     case IR::Opcode::ReadConstBuffer:
         if (u16 offset = GetFlatbufOffset(pass_info.DeduplicateInstruction(inst)); offset != 0) {
@@ -1012,19 +1020,36 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     }
     auto* use_list = pass_info.GetUsesAsPointer(subtree);
     ASSERT(use_list);
+    std::vector<std::pair<IR::Value, IR::Inst*>> pending;
     for (auto [src_off_dw, use] : *use_list) {
         if (src_off_dw.IsImmediate()) {
             p.insert(p.end(), {OpCopyImm, src_off_dw.U32(), pass_info.dst_off_dw});
+            SetFlatbufOffset(use, pass_info.dst_off_dw++);
         } else {
-            SrtProgram offset;
-            if (!ComputeOffset(offset, pass_info, src_off_dw)) {
-                LogSrtError("Failed to compute offset for SRT walker", "");
-                continue;
-            }
-            p.insert(p.end(), offset.begin(), offset.end());
-            p.insert(p.end(), {OpCopyDyn, pass_info.dst_off_dw});
+            pending.emplace_back(src_off_dw, use);
         }
-        SetFlatbufOffset(use, pass_info.dst_off_dw++);
+    }
+    while (!pending.empty()) {
+        bool progress = false;
+        std::vector<std::pair<IR::Value, IR::Inst*>> next_pending;
+        for (auto& [src_off_dw, use] : pending) {
+            SrtProgram offset;
+            if (ComputeOffset(offset, pass_info, src_off_dw)) {
+                p.insert(p.end(), offset.begin(), offset.end());
+                p.insert(p.end(), {OpCopyDyn, pass_info.dst_off_dw});
+                SetFlatbufOffset(use, pass_info.dst_off_dw++);
+                progress = true;
+            } else {
+                next_pending.emplace_back(src_off_dw, use);
+            }
+        }
+        pending = std::move(next_pending);
+        if (!progress) {
+            for (size_t i = 0; i < pending.size(); ++i) {
+                LogSrtError("Failed to compute offset for SRT walker", "");
+            }
+            break;
+        }
     }
     for (const auto [src_off_dw, use] : *use_list) {
         if (pass_info.GetUsesAsPointer(use)) {
@@ -1207,14 +1232,17 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
         }
 
         IR::Inst* base = inst->Arg(0).Inst();
-        if (auto* inst = base->Arg(0).TryInst();
-            inst && inst->GetOpcode() == IR::Opcode::ReadFirstLane) {
+        IR::Value ptr_lo_val = base->Arg(0);
+        if (auto* rfl = ptr_lo_val.TryInst();
+            rfl && rfl->GetOpcode() == IR::Opcode::ReadFirstLane) {
+            ptr_lo_val = rfl->Arg(0);
+        }
+        if (!IsReadConstSource(ptr_lo_val)) {
             continue;
         }
-        ASSERT_MSG(IsReadConstSource(base->Arg(0)), "ReadConst base low not from constant memory");
-        ASSERT_MSG(IsReadConstSource(base->Arg(1)), "ReadConst base high not from constant memory");
+        ASSERT_MSG(IsReadConstSource(ptr_lo_val), "ReadConst base low not from constant memory");
 
-        IR::Inst* ptr_lo = base->Arg(0).Inst();
+        IR::Inst* ptr_lo = ptr_lo_val.Inst();
         ptr_lo = pass_info.DeduplicateInstruction(ptr_lo);
 
         auto ptr_uses_kv = pass_info.pointer_uses.try_emplace(ptr_lo, PassInfo::PtrUserList{});

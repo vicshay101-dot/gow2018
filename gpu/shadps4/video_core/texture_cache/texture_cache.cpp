@@ -725,11 +725,16 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
 
         const bool keep_paired_sibling =
             cache_image.info.guest_address == requested_info.guest_address &&
-            cache_image.info.size == requested_info.size && bpp_match && stencil_match &&
+            cache_image.info.size == requested_info.size && bpp_match &&
             cache_image.info.num_samples == 1 && requested_info.num_samples == 1 &&
             cache_image.info.props.is_depth != requested_info.props.is_depth &&
             !(cache_image.info.resources < requested_info.resources);
-        if (!keep_paired_sibling) {
+        if (keep_paired_sibling) {
+            cache_image.paired_sibling_id = new_image_id;
+            cache_image.paired_sibling_uid = new_image.image_uid;
+            new_image.paired_sibling_id = cache_image_id;
+            new_image.paired_sibling_uid = cache_image.image_uid;
+        } else {
             FreeImage(cache_image_id);
         }
         return new_image_id;
@@ -1029,6 +1034,25 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     return new_image_id;
 }
 
+void TextureCache::SyncPairedSibling(ImageId image_id) {
+    Image& image = slot_images[image_id];
+    if (!image.paired_sibling_id) {
+        return;
+    }
+    Image& sibling = slot_images[image.paired_sibling_id];
+    if (False(sibling.flags & ImageFlagBits::Registered) ||
+        sibling.image_uid != image.paired_sibling_uid ||
+        sibling.info.guest_address != image.info.guest_address) {
+        image.paired_sibling_id = {};
+        image.paired_sibling_uid = 0;
+        return;
+    }
+    if (sibling.alias_generation > image.alias_generation) {
+        runtime.CopyColorAndDepth(&sibling, &image);
+        image.alias_generation = sibling.alias_generation;
+    }
+}
+
 ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     const auto& info = desc.info;
     ASSERT(info.guest_address != 0);
@@ -1064,6 +1088,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         Image& image = slot_images[cached.image_id];
         image.tick_accessed_last = scheduler.CurrentTick();
         TouchImage(image);
+        SyncPairedSibling(cached.image_id);
         if (cached.view_mip > 0) {
             desc.view_info.range.base.level = cached.view_mip;
         }
@@ -1104,6 +1129,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     if (image_id) {
         Image& found = slot_images[image_id];
         Image* newest_sibling = nullptr;
+        ImageId newest_sibling_id{};
         for (const auto& cid : image_ids) {
             if (cid == image_id) {
                 continue;
@@ -1112,15 +1138,19 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             if (cand.info.guest_address == found.info.guest_address &&
                 cand.info.size == found.info.size && cand.info.num_bits == found.info.num_bits &&
                 cand.info.num_samples == 1 && found.info.num_samples == 1 &&
-                cand.info.props.is_depth != found.info.props.is_depth &&
-                cand.alias_generation > found.alias_generation &&
-                (!newest_sibling || cand.alias_generation > newest_sibling->alias_generation)) {
-                newest_sibling = &cand;
+                cand.info.props.is_depth != found.info.props.is_depth) {
+                if (!newest_sibling || cand.alias_generation > newest_sibling->alias_generation) {
+                    newest_sibling = &cand;
+                    newest_sibling_id = cid;
+                }
             }
         }
         if (newest_sibling) {
-            runtime.CopyColorAndDepth(newest_sibling, &found);
-            found.alias_generation = newest_sibling->alias_generation;
+            found.paired_sibling_id = newest_sibling_id;
+            found.paired_sibling_uid = newest_sibling->image_uid;
+            newest_sibling->paired_sibling_id = image_id;
+            newest_sibling->paired_sibling_uid = found.image_uid;
+            SyncPairedSibling(image_id);
         }
     }
 

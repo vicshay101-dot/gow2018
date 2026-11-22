@@ -166,6 +166,8 @@ public:
     u64 image_uid{};
     /// gow3: order of the last GPU write, to sync images sharing memory (texture_cache.h).
     u64 alias_generation{};
+    ImageId paired_sibling_id{};
+    u64 paired_sibling_uid{};
 
     ImageInfo info;
     Vulkan::Runtime* runtime;

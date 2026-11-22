@@ -455,7 +455,11 @@ void Runtime::CopyImageWithBuffer(VideoCore::Image* src, VideoCore::Image* dst,
             .imageOffset = {0, 0, 0},
             .imageExtent = {mip_w, mip_h, mip_d},
         };
-        const auto copy_size = BufferImageCopySize(copy, src->info.pixel_format);
+        const vk::Format copy_fmt =
+            (src->info.pixel_format == vk::Format::eD32SfloatS8Uint)
+                ? vk::Format::eD32Sfloat
+                : src->info.pixel_format;
+        const auto copy_size = BufferImageCopySize(copy, copy_fmt);
         download_copies.push_back(copy);
         copy.imageSubresource.aspectMask = dst->aspect_mask & ~vk::ImageAspectFlagBits::eStencil;
         upload_copies.push_back(copy);
