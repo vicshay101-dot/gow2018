@@ -183,6 +183,7 @@ SharpLocation SharpLocationFromSource(const IR::Inst* inst) {
 template <typename T>
 SharpFetch<T> ConstructSharpFetch(const SharpReference& sharp) {
     SharpFetch<T> sharp_fetch{};
+    sharp_fetch.and_mask_bits = sharp.and_mask_bits;
     for (u32 i = 0; i < sharp.num_dwords; i++) {
         auto dword = sharp.dwords[i];
         if (dword.IsImmediate()) {
@@ -191,6 +192,7 @@ SharpFetch<T> ConstructSharpFetch(const SharpReference& sharp) {
             sharp_fetch.offsets[i] = SharpLocationFromSource(dword.Inst());
             sharp_fetch.load_mask |= (1 << i);
         }
+        sharp_fetch.and_masks[i] = sharp.and_masks[i];
     }
     return sharp_fetch;
 }

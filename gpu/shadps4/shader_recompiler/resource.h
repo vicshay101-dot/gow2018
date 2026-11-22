@@ -28,7 +28,9 @@ struct SharpFetch {
 
     std::array<u32, N> immediates;
     std::array<SharpLocation, N> offsets;
+    std::array<u32, N> and_masks;
     u8 load_mask;
+    u8 and_mask_bits;
 
     bool operator==(const SharpFetch&) const = default;
 
@@ -36,6 +38,7 @@ struct SharpFetch {
         requires(num_dwords <= N)
     constexpr bool Fetch(const u32* flatbuf, T* out) const {
         u8 mask = load_mask;
+        u8 amask = and_mask_bits;
         for (u32 i = 0; i < num_dwords; i++) {
             if (offsets[i] == UNKNOWN_LOCATION) {
                 return false;
@@ -43,8 +46,13 @@ struct SharpFetch {
         }
         std::array<u32, num_dwords> out_dw;
         for (u32 i = 0; i < num_dwords; i++) {
-            out_dw[i] = (mask & 1) ? flatbuf[offsets[i]] : immediates[i];
+            u32 val = (mask & 1) ? flatbuf[offsets[i]] : immediates[i];
+            if (amask & 1) {
+                val &= and_masks[i];
+            }
+            out_dw[i] = val;
             mask >>= 1;
+            amask >>= 1;
         }
         std::memcpy(out, out_dw.data(), sizeof(out_dw));
         return true;

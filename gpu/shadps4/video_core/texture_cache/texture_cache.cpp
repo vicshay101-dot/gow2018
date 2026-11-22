@@ -721,9 +721,17 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         // When creating a depth buffer through overlap resolution don't clear it on first use.
         new_image.info.meta_info.htile_clear_mask = 0;
         runtime.CopyColorAndDepth(&cache_image, &new_image);
+        new_image.alias_generation = cache_image.alias_generation;
 
-        // Free the cache image.
-        FreeImage(cache_image_id);
+        const bool keep_paired_sibling =
+            cache_image.info.guest_address == requested_info.guest_address &&
+            cache_image.info.size == requested_info.size && bpp_match && stencil_match &&
+            cache_image.info.num_samples == 1 && requested_info.num_samples == 1 &&
+            cache_image.info.props.is_depth != requested_info.props.is_depth &&
+            !(cache_image.info.resources < requested_info.resources);
+        if (!keep_paired_sibling) {
+            FreeImage(cache_image_id);
+        }
         return new_image_id;
     }
 
@@ -1093,6 +1101,29 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         image_id = cache_id;
     }
 
+    if (image_id) {
+        Image& found = slot_images[image_id];
+        Image* newest_sibling = nullptr;
+        for (const auto& cid : image_ids) {
+            if (cid == image_id) {
+                continue;
+            }
+            Image& cand = slot_images[cid];
+            if (cand.info.guest_address == found.info.guest_address &&
+                cand.info.size == found.info.size && cand.info.num_bits == found.info.num_bits &&
+                cand.info.num_samples == 1 && found.info.num_samples == 1 &&
+                cand.info.props.is_depth != found.info.props.is_depth &&
+                cand.alias_generation > found.alias_generation &&
+                (!newest_sibling || cand.alias_generation > newest_sibling->alias_generation)) {
+                newest_sibling = &cand;
+            }
+        }
+        if (newest_sibling) {
+            runtime.CopyColorAndDepth(newest_sibling, &found);
+            found.alias_generation = newest_sibling->alias_generation;
+        }
+    }
+
     // gow3 (GOW3_PERF_DIAG): what was cached here, read before overlap resolution may free it.
     const bool diag = Vulkan::WaitDiagnostics::Enabled();
     CreateStat created{info.guest_address, info.size.width, info.size.height, 1, info.pixel_format,
@@ -1295,6 +1326,7 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
     image.flags |= ImageFlagBits::GpuModified;
     image.usage.depth_target = 1u;
     UpdateImage(image_id);
+    PublishAliasWrite(image_id);
 
     // Register meta data for this depth buffer
     if (desc.info.meta_info.htile_addr) {

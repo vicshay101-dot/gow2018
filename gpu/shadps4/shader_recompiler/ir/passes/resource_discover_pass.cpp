@@ -247,7 +247,41 @@ IR::Inst* FindSharpSource(IR::Inst* handle) {
     return handle;
 }
 
-void MarkReadConstBufferSharpSources(const SharpReference& sharp) {
+static void UnwrapSharpDwordMasks(SharpReference& sharp) {
+    for (u32 i = 0; i < sharp.num_dwords; ++i) {
+        u32 mask = (sharp.and_mask_bits & (1u << i)) ? sharp.and_masks[i] : 0xFFFFFFFFu;
+        bool masked = (sharp.and_mask_bits & (1u << i)) != 0;
+        IR::Value val = sharp.dwords[i];
+        for (int depth = 0; depth < 4; ++depth) {
+            IR::Inst* inst = val.TryInst();
+            if (!inst) {
+                break;
+            }
+            if (inst->GetOpcode() == IR::Opcode::ReadFirstLane) {
+                val = inst->Arg(0);
+                continue;
+            }
+            if (inst->GetOpcode() == IR::Opcode::BitwiseAnd32 &&
+                inst->Arg(0).IsImmediate() != inst->Arg(1).IsImmediate()) {
+                const u32 imm =
+                    inst->Arg(0).IsImmediate() ? inst->Arg(0).U32() : inst->Arg(1).U32();
+                val = inst->Arg(0).IsImmediate() ? inst->Arg(1) : inst->Arg(0);
+                mask &= imm;
+                masked = true;
+                continue;
+            }
+            break;
+        }
+        sharp.dwords[i] = val;
+        if (masked) {
+            sharp.and_mask_bits |= static_cast<u8>(1u << i);
+            sharp.and_masks[i] = mask;
+        }
+    }
+}
+
+void MarkReadConstBufferSharpSources(SharpReference& sharp) {
+    UnwrapSharpDwordMasks(sharp);
     // In cases of bindless sharp fetches mark all producer instructions
     // so the extended userdata flattening pass will include them.
     for (size_t i = 0; i < sharp.num_dwords; i++) {
