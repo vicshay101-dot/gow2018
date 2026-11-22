@@ -197,7 +197,7 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
                 memory_tracker->MarkRegionAsCpuModified(device_addr, size);
                 return;
             }
-            constexpr u64 WriteWindow = 256_KB;
+            constexpr u64 WriteWindow = 1_MB;
             const VAddr win_start =
                 std::max<VAddr>(Common::AlignDown(device_addr, WriteWindow), arena->cpu_addr);
             const VAddr win_end = std::min<VAddr>(
@@ -405,7 +405,9 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
                         copies.size(), hot_readback_windows.size());
         }
     }
-    scheduler.Finish();
+    const u64 copy_tick = scheduler.CurrentTick();
+    scheduler.Flush();
+    scheduler.Wait(copy_tick);
     RetireAsyncDownloads();
 
     download.buffer->Invalidate(download.offset, download.size);
