@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <span>
 
 #include <boost/container/small_vector.hpp>
@@ -24,7 +25,11 @@ Pipeline::Pipeline(const Instance& instance_, Scheduler& scheduler_, DescriptorH
 Pipeline::~Pipeline() = default;
 
 void Pipeline::InitializeBufferDescriptorTemplate(u32 buffer_count) {
-    if (!uses_push_descriptors || buffer_count < 4 ||
+    static const bool enabled = [] {
+        const char* env = std::getenv("GOW3_DESCRIPTOR_TEMPLATE");
+        return env && env[0] == '1';
+    }();
+    if (!enabled || !uses_push_descriptors || buffer_count < 4 ||
         !VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateDescriptorUpdateTemplate ||
         !VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdPushDescriptorSetWithTemplateKHR) {
         return;
