@@ -15,6 +15,7 @@
 #include "video_core/buffer_cache/fault_manager.h"
 #include "video_core/buffer_cache/range_set.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
+#include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 
 namespace AmdGpu {
 struct Liverpool;
@@ -117,7 +118,22 @@ public:
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 
+    /// Enqueues non-blocking GPU->staging copies for hot readback windows prior to submit.
+    void SubmitAsyncDownloads();
+
+    /// Completes any finished async buffer downloads into guest RAM without stalling.
+    void RetireAsyncDownloads();
+
 private:
+    struct AsyncDownload {
+        VAddr window_start;
+        VAddr window_end;
+        VAddr arena_base;
+        u64 tick;
+        Vulkan::StagingBufferRef staging;
+        boost::container::small_vector<vk::BufferCopy, 4> copies;
+    };
+
     struct ArenaBinds {
         const Buffer* arena;
         boost::container::small_vector<vk::SparseMemoryBind, 32> binds;
@@ -168,6 +184,8 @@ private:
     StreamBuffer stream_buffer;
     Buffer gds_buffer;
     RangeSet gpu_modified_ranges;
+    std::deque<AsyncDownload> pending_async_downloads;
+    std::vector<std::pair<VAddr, VAddr>> hot_readback_windows;
 
     std::unique_ptr<FaultManager> fault_manager;
     std::unique_ptr<Buffer> bda_pagetable_buffer;

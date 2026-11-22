@@ -102,7 +102,24 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     runtime.FillBuffer(bda_pagetable_buffer.get(), 0u, bda_pagetable_size, 0u);
 }
 
-BufferCache::~BufferCache() = default;
+BufferCache::~BufferCache() {
+    for (auto& entry : pending_async_downloads) {
+        staging_pool.FreeDeferred(entry.staging);
+    }
+    pending_async_downloads.clear();
+}
+
+namespace {
+bool AsyncBufferReadbackEnabled() noexcept {
+    static const bool enabled = [] {
+        if (const char* env = std::getenv("GOW3_ASYNC_BUFFER_READBACK")) {
+            return env[0] == '1';
+        }
+        return std::getenv("GOW3_ANDROID_PORT") != nullptr;
+    }();
+    return enabled;
+}
+} // namespace
 
 void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks) {
     memory_tracker->InvalidateRegion(device_addr, size, [this, device_addr, size, assume_locks] {
@@ -186,7 +203,130 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
     }
 }
 
+void BufferCache::RetireAsyncDownloads() {
+    while (!pending_async_downloads.empty() &&
+           scheduler.IsFree(pending_async_downloads.front().tick)) {
+        auto entry = std::move(pending_async_downloads.front());
+        pending_async_downloads.pop_front();
+        entry.staging.Invalidate();
+        for (const auto& copy : entry.copies) {
+            auto* dst_addr = std::bit_cast<u8*>(entry.arena_base + copy.srcOffset);
+            memory->TryWriteBacking(
+                dst_addr, entry.staging.mapped + (copy.dstOffset - entry.staging.offset),
+                copy.size);
+        }
+        staging_pool.FreeDeferred(entry.staging);
+        bool still_pending = false;
+        for (const auto& other : pending_async_downloads) {
+            if (other.window_start < entry.window_end && entry.window_start < other.window_end) {
+                still_pending = true;
+                break;
+            }
+        }
+        const u64 win_size = entry.window_end - entry.window_start;
+        if (!still_pending && !gpu_modified_ranges.Intersects(entry.window_start, win_size)) {
+            memory_tracker->UnmarkRegionAsGpuModified(entry.window_start, win_size);
+        }
+    }
+}
+
+void BufferCache::SubmitAsyncDownloads() {
+    if (!AsyncBufferReadbackEnabled()) {
+        return;
+    }
+    RetireAsyncDownloads();
+    if (hot_readback_windows.empty() || pending_async_downloads.size() >= 16) {
+        return;
+    }
+    constexpr u64 MaxAsyncBytes = 8_MB;
+    for (const auto& [win_start, win_end] : hot_readback_windows) {
+        if (pending_async_downloads.size() >= 16) {
+            break;
+        }
+        const u64 win_size = win_end - win_start;
+        if (!gpu_modified_ranges.Intersects(win_start, win_size)) {
+            continue;
+        }
+        const u32 first_block = win_start >> block_shift;
+        const u32 last_block = (win_end - 1) >> block_shift;
+        const auto* arena = GetArena(first_block, last_block);
+        const VAddr arena_base = arena->cpu_addr;
+        boost::container::small_vector<vk::BufferCopy, 4> copies;
+        u64 total_size_bytes = 0;
+        bool overflow = false;
+        memory_tracker->ForEachDownloadRange<false>(win_start, win_size, [&](u64 address, u64 size) {
+            if (overflow) {
+                return;
+            }
+            const auto add_download = [&](VAddr start, VAddr end) {
+                if (overflow) {
+                    return;
+                }
+                const u64 new_offset = start - arena_base;
+                const u64 new_size = end - start;
+                constexpr u64 align = 64ULL;
+                constexpr u64 mask = ~(align - 1ULL);
+                const u64 aligned_size = (new_size + align - 1) & mask;
+                if (total_size_bytes + aligned_size > MaxAsyncBytes) {
+                    overflow = true;
+                    return;
+                }
+                copies.push_back(vk::BufferCopy{
+                    .srcOffset = new_offset,
+                    .dstOffset = total_size_bytes,
+                    .size = new_size,
+                });
+                total_size_bytes += aligned_size;
+            };
+            gpu_modified_ranges.ForEachInRange(address, size, add_download);
+        });
+        if (overflow || total_size_bytes == 0) {
+            continue;
+        }
+        for (const auto& copy : copies) {
+            gpu_modified_ranges.Subtract(arena_base + copy.srcOffset, copy.size);
+        }
+        const auto download =
+            staging_pool.Request(total_size_bytes, VideoCore::MemoryType::HostCached, 0, true);
+        for (auto& copy : copies) {
+            copy.dstOffset += download.offset;
+        }
+        runtime.CopyBuffer(arena, download.buffer, copies);
+        pending_async_downloads.push_back(AsyncDownload{
+            .window_start = win_start,
+            .window_end = win_end,
+            .arena_base = arena_base,
+            .tick = scheduler.CurrentTick(),
+            .staging = download,
+            .copies = std::move(copies),
+        });
+    }
+}
+
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size) {
+    const bool async_enabled = AsyncBufferReadbackEnabled();
+    const VAddr window_end = device_addr + size;
+    if (async_enabled) {
+        RetireAsyncDownloads();
+        bool known = false;
+        for (const auto& [ws, we] : hot_readback_windows) {
+            if (ws == device_addr && we == window_end) {
+                known = true;
+                break;
+            }
+        }
+        if (!known && hot_readback_windows.size() < 16) {
+            hot_readback_windows.emplace_back(device_addr, window_end);
+        }
+    }
+
+    u64 pending_tick = 0;
+    for (const auto& entry : pending_async_downloads) {
+        if (entry.window_start < window_end && device_addr < entry.window_end) {
+            pending_tick = std::max(pending_tick, entry.tick);
+        }
+    }
+
     boost::container::small_vector<vk::BufferCopy, 1> copies;
     u64 total_size_bytes = 0;
     const VAddr arena_base = arena->cpu_addr;
@@ -208,6 +348,13 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         gpu_modified_ranges.Subtract(address, size);
     });
     if (total_size_bytes == 0) {
+        if (pending_tick != 0) {
+            if (!scheduler.IsFree(pending_tick)) {
+                scheduler.Wait(pending_tick);
+            }
+            RetireAsyncDownloads();
+        }
+        memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
         return;
     }
     const auto download = staging_pool.Request(total_size_bytes, VideoCore::MemoryType::HostCached);
@@ -216,6 +363,7 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     }
     runtime.CopyBuffer(arena, download.buffer, copies);
     scheduler.Finish();
+    RetireAsyncDownloads();
 
     download.buffer->Invalidate(download.offset, download.size);
     for (const auto& copy : copies) {
@@ -318,6 +466,23 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     }
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
     if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
+        // If this small read-only buffer is already resident and clean in the GPU arena,
+        // bind the arena directly to avoid thousands of redundant CPU memcpy calls per frame
+        // without causing any upload or renderpass break.
+        if (!is_texel_buffer) {
+            const u64 fast_first = device_addr >> block_shift;
+            const u64 fast_last = (device_addr + size - 1) >> block_shift;
+            if (resident_ranges.Contains(fast_first, fast_last + 1) &&
+                !IsRegionCpuModified(device_addr, size)) {
+                const auto* fast_arena = GetArena(fast_first, fast_last);
+                if (stats) {
+                    auto& region = Stats().regions[RegionKey(device_addr)];
+                    ++region.arena_count;
+                    region.arena_bytes += size;
+                }
+                return {fast_arena, fast_arena->Offset(device_addr)};
+            }
+        }
         if (stats) {
             auto& region = Stats().regions[RegionKey(device_addr)];
             ++region.stream_count;

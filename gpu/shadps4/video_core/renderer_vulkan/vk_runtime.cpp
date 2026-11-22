@@ -102,9 +102,20 @@ Runtime::Runtime(const Instance& instance_, Scheduler& scheduler_)
     : instance{instance_}, scheduler{scheduler_}, staging_pool{instance_, scheduler_} {
     blit_helper = std::make_unique<VideoCore::BlitHelper>(instance, scheduler);
 
-    memory_barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+    // Buffer memory barriers never synchronize color/depth attachments (images use image_barriers).
+    // Excluding attachment stages and eMemoryRead|eMemoryWrite avoids redundant CCU color/depth
+    // flushes on tile-based GPUs (Adreno/Turnip) during compute/buffer barrier flushes.
+    memory_barrier.dstStageMask =
+        vk::PipelineStageFlagBits2::eDrawIndirect | vk::PipelineStageFlagBits2::eIndexInput |
+        vk::PipelineStageFlagBits2::eVertexAttributeInput |
+        vk::PipelineStageFlagBits2::ePreRasterizationShaders |
+        vk::PipelineStageFlagBits2::eFragmentShader |
+        vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eAllTransfer;
     memory_barrier.dstAccessMask =
-        vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+        vk::AccessFlagBits2::eIndirectCommandRead | vk::AccessFlagBits2::eIndexRead |
+        vk::AccessFlagBits2::eVertexAttributeRead | vk::AccessFlagBits2::eUniformRead |
+        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite |
+        vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite;
 }
 
 void Runtime::TickFrame() {

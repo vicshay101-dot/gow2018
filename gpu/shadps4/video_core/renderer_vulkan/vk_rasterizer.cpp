@@ -1475,6 +1475,7 @@ void Rasterizer::OnSubmit() {
         fault_process_pending = false;
         buffer_cache.ProcessFaultBuffer();
     }
+    buffer_cache.SubmitAsyncDownloads();
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
@@ -2098,6 +2099,10 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                              Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data, u32& write_index) {
     const u64 alignment = instance.StorageMinAlignment();
+    static const bool android_fsr_fixed = std::getenv("GOW3_ANDROID_FSR_FIXED_OUTPUT") != nullptr;
+    const bool android_scene_camera =
+        android_fsr_fixed && upscaler && upscaler->Enabled() &&
+        camera_motion->Depth() && stage.sw_stage == Shader::SwStage::Vertex;
     for (u32 buffer_index = 0; buffer_index < stage.buffers.size(); ++buffer_index) {
         const auto& desc = stage.buffers[buffer_index];
         const RingBinding* ring = num_ring_stages ? FindRingBinding(stage, buffer_index) : nullptr;
@@ -2112,10 +2117,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 // CUSA01715 uses a forward renderer: gbuffer_draw is never
                 // true.  Inspect camera candidates from its scene vertex
                 // constants too; OnConstants still validates the signature.
-                const bool android_scene_camera =
-                    std::getenv("GOW3_ANDROID_FSR_FIXED_OUTPUT") &&
-                    upscaler && upscaler->Enabled() &&
-                    camera_motion->Depth() && stage.sw_stage == Shader::SwStage::Vertex;
                 if (ring->size >= 64 && ring->size <= 4096 &&
                     (gbuffer_draw || android_scene_camera) &&
                     ring->address && memory->IsValidGpuMapping(ring->address, ring->size)) {
@@ -2179,10 +2180,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         } else {
             const auto vsharp =
                 prepared ? prepared->buffer_sharps[buffer_index] : desc.GetSharp(stage);
-            const bool android_scene_camera =
-                std::getenv("GOW3_ANDROID_FSR_FIXED_OUTPUT") &&
-                    upscaler && upscaler->Enabled() &&
-                camera_motion->Depth() && stage.sw_stage == Shader::SwStage::Vertex;
             if (vsharp.GetSize() >= 64 && vsharp.GetSize() <= 4096 &&
                 (gbuffer_draw || android_scene_camera) && vsharp.base_address &&
                 memory->IsValidGpuMapping(vsharp.base_address, vsharp.GetSize())) {

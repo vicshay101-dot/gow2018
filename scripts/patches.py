@@ -443,6 +443,64 @@ GOW2018_RES_SIGNATURES = (
      '1f 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? 80 07 00 00 38 04 00 00 1d 00 00 00 00 00 00 00 '
      '20 00 00 00 00 00 00 00 ?? ?? ?? ?? ?? ?? ?? ?? 80 07 00 00 38 04 00 00 05 00 00 00 00 00 00 00',
      ((16, 'w'), (20, 'h'), (48, 'w'), (52, 'h'), (80, 'w'), (84, 'h'), (112, 'w'), (116, 'h'))),
+    # Constant-folded internal width integers (W=1920, W/8=240, W/16=120) paired with g_is_initialized
+    # (PS4 Base and PS4 Pro checkerboard both share internal width 1920, so Clang folded width while
+    # keeping height dynamic; patching these keeps compute grids, culling, and viewports consistent).
+    ('width_init_check',
+     '00 8a 05 0e 05 9a 02 31 c9 bb 80 07 00 00 44 8b 3d 04 05 9a 02 84 c0 0f',
+     ((10, 'w'),)),
+    ('width_div8_cull',
+     '44 00 01 89 43 20 45 31 f6 b9 f0 00 00 00 4c 89 ff 8a 05 98 6c 80 02 84',
+     ((10, 'w8'),)),
+    ('width_render_a',
+     '62 ad 00 c5 fc 57 c0 31 c9 ba 80 07 00 00 c5 f1 ef c9 4d 89 1e c4 c1 7c',
+     ((10, 'w'),)),
+    ('width_div8_post',
+     'fa 10 0d 1b 44 89 00 31 d2 bf f0 00 00 00 41 b9 03 00 00 00 c5 f2 5e c0',
+     ((10, 'w8'),)),
+    ('width_tile_w',
+     '15 00 00 8a 05 19 60 6b 02 b9 80 07 00 00 84 c0 41 0f 44 ce 89 0b 8b 05',
+     ((10, 'w'),)),
+    ('width_tile_div8_16',
+     '00 c5 fa 10 0d 8d 30 89 00 be f0 00 00 00 bf 78 00 00 00 8d 4a 01 41 0f',
+     ((10, 'w8'), (15, 'w16'))),
+    ('width_cs_grid8',
+     'c1 75 e0 c5 fc 57 c0 31 db bf f0 00 00 00 b9 00 00 00 00 c4 c1 7c 11 47',
+     ((10, 'w8'),)),
+    ('width_cs_grid16',
+     '02 8b 15 3d 53 6b 02 84 c0 b8 78 00 00 00 8d 72 07 0f 45 c8 c1 fe 1f c1',
+     ((10, 'w16'),)),
+    ('width_render_b',
+     'e8 8c 95 f2 ff 49 89 46 18 ba 80 07 00 00 c5 fc 57 c0 8a 05 7d 51 6b 02',
+     ((10, 'w'),)),
+    ('width_render_c',
+     '00 8a 05 f9 e0 6a 02 84 c0 b8 80 07 00 00 41 0f 44 c6 c5 f9 6e c0 c4 e3',
+     ((10, 'w'),)),
+)
+
+# Exclusive .rodata float constants (1920.0f = W, 960.0f = W/2) referenced ONLY by internal-width
+# code gated on g_is_initialized. Located via the RIP-relative disp32 at delta+12 of each 20-byte
+# signature (vmovss at delta+8, instruction length 8 -> rodata_off = base + 16 + disp32).
+GOW2018_RES_RODATA_FLOAT_SIGNATURES = (
+    ('flt_half_2052a3', '75 06 c5 f8 57 c0 eb 08 c5 fa 10 05 b9 d0 aa 00 8b 05 37 16', 'wf2'),
+    ('flt_full_231656', 'c5 e8 59 c9 c5 e8 58 c9 c5 fa 10 15 32 10 a8 00 c5 f8 59 c1', 'wf'),
+    ('flt_half_2d06f6', '75 06 c5 e8 57 d2 eb 08 c5 fa 10 15 32 23 9e 00 c4 c1 72 5c', 'wf2'),
+    ('flt_full_2f9f41', '75 06 c5 f8 57 c0 eb 08 c5 fa 10 05 6f 8c 9b 00 c5 fa 11 45', 'wf'),
+    ('flt_full_30516a', '75 06 c5 f8 57 c0 eb 08 c5 fa 10 05 92 da 9a 00 c4 41 30 57', 'wf'),
+    ('flt_full_330b11', 'fa 71 00 e9 5f e9 ff ff c5 fa 10 0d 93 22 98 00 8a 05 c9 80', 'wf'),
+    ('flt_full_33f81c', 'c3 01 0f 84 74 fd ff ff c5 fa 10 15 b8 35 97 00 c5 f8 57 05', 'wf'),
+    ('flt_full_35128f', '75 06 c5 f8 57 c0 eb 08 c5 fa 10 05 a9 1c 96 00 c5 fa 11 85', 'wf'),
+    ('flt_full_35202c', '75 06 c5 f8 57 c0 eb 08 c5 fa 10 05 24 0f 96 00 c5 fa 11 45', 'wf'),
+    ('flt_full_352de0', '75 06 c5 e0 57 db eb 08 c5 fa 10 1d 8c 01 96 00 c5 fa 59 c2', 'wf'),
+    ('flt_half_36189f', '75 06 c5 e8 57 d2 eb 08 c5 fa 10 15 fd 16 95 00 c5 f2 5c 8b', 'wf2'),
+    ('flt_full_41f55d', '75 06 c5 f8 57 c0 eb 08 c5 fa 10 05 1f 44 89 00 c5 fa 10 0d', 'wf'),
+    ('flt_full_420173', '75 67 6b 02 84 c0 74 08 c5 fa 10 05 19 38 89 00 8b 05 67 67', 'wf'),
+    ('flt_full_420903', '75 06 c5 f8 57 c0 eb 08 c5 fa 10 05 91 30 89 00 c5 fa 10 0d', 'wf'),
+    ('flt_full_423c27', '75 06 c5 f8 57 c0 eb 08 c5 fa 10 05 8d fd 88 00 44 8b 25 b2', 'wf'),
+    ('flt_full_52d5db', '75 06 c5 e8 57 d2 eb 08 c5 fa 10 15 91 70 78 00 c4 e3 79 04', 'wf'),
+    ('flt_full_59ca63', 'c5 e0 59 d2 c5 e0 58 d2 c5 fa 10 1d d1 81 71 00 c5 f0 59 ca', 'wf'),
+    ('flt_full_75575c', '75 06 c5 d8 57 e4 eb 08 c5 fa 10 25 4c fe 55 00 c5 d2 2a 35', 'wf'),
+    ('flt_half_874175', 'ea 58 f8 e9 32 03 00 00 c5 fa 10 05 7b 20 44 00 c5 fa 10 25', 'wf2'),
 )
 
 
@@ -456,9 +514,12 @@ def compile_gow2018_resolution_patches(image, segments, render_res):
     width, height = map(int, match.groups())
     if (width, height) == (1920, 1080):
         return []
-    if not (256 <= width <= 1920 and 144 <= height <= 1080 and width % 8 == 0 and height % 8 == 0):
-        raise ValueError(f'CUSA07408 resolution must be divisible by 8 (got {width}x{height})')
+    if not (256 <= width <= 1920 and 144 <= height <= 1080 and width % 16 == 0 and height % 8 == 0):
+        raise ValueError(f'CUSA07408 resolution must be 16x8-aligned (got {width}x{height})')
+    int_expected = {'w': 1920, 'h': 1080, 'w8': 240, 'w16': 120}
+    int_target = {'w': width, 'h': height, 'w8': width // 8, 'w16': width // 16}
     writes = []
+    seen_offsets = set()
     for name, pattern_text, fields in GOW2018_RES_SIGNATURES:
         found = find_pattern(image, parse_pattern(pattern_text))
         if len(found) != 1:
@@ -468,11 +529,31 @@ def compile_gow2018_resolution_patches(image, segments, render_res):
             off = base + delta
             if not any(start <= off and off + 4 <= end for start, end in segments):
                 raise ValueError(f'CUSA07408 {name}+{delta} outside PT_LOAD segments')
-            expected = 1920 if kind == 'w' else 1080
+            expected = int_expected[kind]
             actual, = struct.unpack_from('<I', image, off)
             if actual != expected:
                 raise ValueError(f'CUSA07408 {name}+{delta}: expected {expected}, got {actual}')
-            writes.append((off, struct.pack('<I', width if kind == 'w' else height)))
+            if off not in seen_offsets:
+                seen_offsets.add(off)
+                writes.append((off, struct.pack('<I', int_target[kind])))
+    flt_expected = {'wf': 1920.0, 'wf2': 960.0}
+    flt_target = {'wf': float(width), 'wf2': float(width) * 0.5}
+    for name, pattern_text, kind in GOW2018_RES_RODATA_FLOAT_SIGNATURES:
+        found = find_pattern(image, parse_pattern(pattern_text))
+        if len(found) != 1:
+            raise LookupError(f'CUSA07408 {name} float signature match count={len(found)}')
+        base = found[0]
+        disp, = struct.unpack_from('<i', image, base + 12)
+        ro_off = base + 16 + disp
+        if not any(start <= ro_off and ro_off + 4 <= end for start, end in segments):
+            raise ValueError(f'CUSA07408 {name} rodata {ro_off:#x} outside segments')
+        actual, = struct.unpack_from('<f', image, ro_off)
+        if actual != flt_expected[kind]:
+            raise ValueError(
+                f'CUSA07408 {name} rodata {ro_off:#x}: expected {flt_expected[kind]}, got {actual}')
+        if ro_off not in seen_offsets:
+            seen_offsets.add(ro_off)
+            writes.append((ro_off, struct.pack('<f', flt_target[kind])))
     return writes
 
 

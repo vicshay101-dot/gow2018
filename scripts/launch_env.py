@@ -126,13 +126,23 @@ def derive(game, config, state_path, env):
         updates['GOW3_GAME_TITLE'] = 'CUSA07408'
         updates['GOW3_GAME_VERSION'] = identity_check.get('app_version') or '01.00'
         updates['GOW3_PATCH_STATUS'] = 'gow2018-fork-active'
-        updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-clean-render'
+        eboot_res_enabled = env.get('GOW3_GOW2018_EBOOT_RES', '1')
+        patch_res = env.get('GOW3_PATCH_INPUT_RES', '1024x576')
+        updates['GOW3_GOW2018_EBOOT_RES'] = eboot_res_enabled
+        if eboot_res_enabled == '1' and patch_res:
+            updates['GOW3_PATCH_INPUT_RES'] = patch_res
+            updates['GOW3_RESOLUTION_STATUS'] = f'gow2018-native-{patch_res}'
+            default_w, default_h = patch_res.split('x') if 'x' in patch_res else ('1024', '576')
+        else:
+            updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-clean-render'
+            default_w, default_h = '960', '540'
         updates['GOW3_READBACKS'] = env.get('GOW3_READBACKS', '1')
+        updates['GOW3_ASYNC_BUFFER_READBACK'] = env.get('GOW3_ASYNC_BUFFER_READBACK', '1')
         updates['GOW3_DEFERRED_READBACK'] = '0'
         updates['GOW3_STALE_READBACK'] = '0'
         updates['GOW3_READBACK_LINEAR'] = '0'
-        updates['GOW3_SCREEN_W'] = env.get('GOW3_SCREEN_W', '960')
-        updates['GOW3_SCREEN_H'] = env.get('GOW3_SCREEN_H', '540')
+        updates['GOW3_SCREEN_W'] = env.get('GOW3_SCREEN_W', default_w)
+        updates['GOW3_SCREEN_H'] = env.get('GOW3_SCREEN_H', default_h)
         updates['GOW3_HOT_PAGES'] = env.get('GOW3_HOT_PAGES', '0')
         updates['GOW3_PREP_WORKERS'] = env.get('GOW3_PREP_WORKERS', '2')
         updates['GOW3_FAULT_WINDOW'] = '1024'
