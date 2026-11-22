@@ -197,7 +197,12 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
                 memory_tracker->MarkRegionAsCpuModified(device_addr, size);
                 return;
             }
-            DownloadMemory(arena, page_start, page_size);
+            constexpr u64 WriteWindow = 256_KB;
+            const VAddr win_start =
+                std::max<VAddr>(Common::AlignDown(device_addr, WriteWindow), arena->cpu_addr);
+            const VAddr win_end = std::min<VAddr>(
+                std::max<VAddr>(win_start + WriteWindow, page_end), arena_end);
+            DownloadMemory(arena, win_start, win_end - win_start);
             memory_tracker->MarkRegionAsCpuModified(device_addr, size);
             return;
         }
@@ -338,7 +343,10 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
                 break;
             }
         }
-        if (!known && hot_readback_windows.size() < 64) {
+        if (!known) {
+            if (hot_readback_windows.size() >= 256) {
+                hot_readback_windows.erase(hot_readback_windows.begin());
+            }
             hot_readback_windows.emplace_back(device_addr, window_end);
         }
     }
@@ -385,6 +393,18 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         copy.dstOffset += download.offset;
     }
     runtime.CopyBuffer(arena, download.buffer, copies);
+    static std::atomic<u32> menu_sync_log{0};
+    if (Gow3Stats::gpu_frames.load(std::memory_order_relaxed) >= 150 &&
+        menu_sync_log.load(std::memory_order_relaxed) < 10) {
+        const u32 idx = menu_sync_log.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 10) {
+            std::printf("GOW3_MENU_SYNC_DL #%u addr=%#llx win=%llu bytes=%llu copies=%zu hot=%zu\n",
+                        idx + 1, static_cast<unsigned long long>(device_addr),
+                        static_cast<unsigned long long>(size),
+                        static_cast<unsigned long long>(total_size_bytes),
+                        copies.size(), hot_readback_windows.size());
+        }
+    }
     scheduler.Finish();
     RetireAsyncDownloads();
 
