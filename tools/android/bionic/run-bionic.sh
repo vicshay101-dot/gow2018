@@ -21,6 +21,9 @@ setting() { sed -n "s/^$1=//p" "$GOW3_CONFIG" | tail -n 1; }
 
 # Source gow3.env overrides if present (critical for custom tunings in fork)
 [ -f "$base/gow3.env" ] && . "$base/gow3.env"
+# User-editable overrides (no rebuild needed), e.g. `export TU_DEBUG=sysmem`
+[ -r /storage/emulated/0/Download/Logs/gow3.env ] && . /storage/emulated/0/Download/Logs/gow3.env
+echo "User env: TU_DEBUG=${TU_DEBUG:-} FD_MESA_DEBUG=${FD_MESA_DEBUG:-}"
 
 chip=$("$runtime/bin/kgsl-chip-id" 2>/dev/null || true)
 turnip=${GOW3_BIONIC_DRIVER:-auto}
