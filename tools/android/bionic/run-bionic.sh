@@ -151,6 +151,7 @@ if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow
     export GOW3_ASYNC_SHADERS=${GOW3_ASYNC_SHADERS:-1}
     export GOW3_ASYNC_CAPTURE=${GOW3_ASYNC_CAPTURE:-1}
     export GOW3_SHADOWS=${GOW3_SHADOWS:-0}
+    export GOW3_VSYNC=${GOW3_VSYNC:-0}
 fi
 
 # Allow user gow3.env to override any settings at runtime without rebuild:

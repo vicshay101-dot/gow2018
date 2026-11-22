@@ -403,6 +403,15 @@ static uintptr_t reserve_on_host(uint64_t *size) {
 #else
 static uintptr_t reserve_on_host(uint64_t *size) { (void)size; return 0; }
 #endif
+static int trace_mem_enabled(void) {
+    static int trace_mem = -1;
+    if (trace_mem < 0) {
+        const char *e = getenv("GOW3_TRACE_MEM");
+        trace_mem = (e && e[0] == '1') ? 1 : 0;
+    }
+    return trace_mem;
+}
+
 static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t alignment,
                      int kind, int type, uint64_t phys) {
     uintptr_t address=(uintptr_t)*inout;
@@ -427,8 +436,10 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
             size=fit;
         }
     }
-    fprintf(stderr,"Runtime: place kind=%d address=0x%" PRIxPTR " size=0x%" PRIx64 " before host_map\n",kind,address,size);
-    fflush(stderr);
+    if (trace_mem_enabled()) {
+        fprintf(stderr,"Runtime: place kind=%d address=0x%" PRIxPTR " size=0x%" PRIx64 " before host_map\n",kind,address,size);
+        fflush(stderr);
+    }
     if (host_map(address,size,host_prot(prot),kind==KIND_RESERVED,phys)) {
         int host_errno=errno;
         fprintf(stderr,"Runtime: HOST MMAP FAILED addr=%p size=%" PRIu64 " phys=0x%" PRIx64 " kind=%d errno=%d (%s)\n",
@@ -527,8 +538,10 @@ static ABI int32_t direct_allocate_impl(int64_t low, int64_t high, uint64_t size
     blocks[slot] = (Block){start, size, type, 1}; *out = (int64_t)start;
     ++allocations; live_bytes += size;
     write_unlock();
-    printf("Runtime: direct allocation offset=0x%" PRIx64 ", size=%" PRIu64 " bytes, type=%d\n", start, size, type);
-    fflush(stdout);
+    if (trace_mem_enabled()) {
+        printf("Runtime: direct allocation offset=0x%" PRIx64 ", size=%" PRIu64 " bytes, type=%d\n", start, size, type);
+        fflush(stdout);
+    }
     return 0;
 }
 
@@ -591,10 +604,16 @@ static ABI int32_t direct_map(void **out, uint64_t size, int prot, int flags, in
     int32_t result=map_direct_locked(out,size,prot,flags,physical,alignment);
     write_unlock();
     flush_hooks();
-    if (!result) printf("Runtime: mapped direct memory %p, size=%" PRIu64 ", prot=0x%x\n", *out, size, prot);
-    else printf("Runtime: map direct memory FAILED code=0x%x hint=%p size=%" PRIu64 " phys=0x%" PRIx64 " flags=0x%x prot=0x%x align=0x%" PRIx64 "\n",
-                (unsigned)result, hint, size, (uint64_t)physical, flags, prot, alignment);
-    fflush(stdout);
+    if (!result) {
+        if (trace_mem_enabled()) {
+            printf("Runtime: mapped direct memory %p, size=%" PRIu64 ", prot=0x%x\n", *out, size, prot);
+            fflush(stdout);
+        }
+    } else {
+        printf("Runtime: map direct memory FAILED code=0x%x hint=%p size=%" PRIu64 " phys=0x%" PRIx64 " flags=0x%x prot=0x%x align=0x%" PRIx64 "\n",
+               (unsigned)result, hint, size, (uint64_t)physical, flags, prot, alignment);
+        fflush(stdout);
+    }
     return result;
 }
 static ABI int32_t direct_map_named(void **out, uint64_t size, int prot, int flags, int64_t physical,

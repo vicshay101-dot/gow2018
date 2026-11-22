@@ -1265,6 +1265,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     if (rasterizer->RunInOrder(&RunEventWriteEop, event_eop, sizeof(*event_eop))) {
                         NotePendingFences(*event_eop);
                     }
+                    rasterizer->FlushHotAsyncReadbacks();
                 } else {
                     SignalEop(*event_eop);
                 }
@@ -1737,6 +1738,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             }
             const auto* release_mem = reinterpret_cast<const PM4CmdReleaseMem*>(header);
             if (rasterizer) {
+                rasterizer->FlushHotAsyncReadbacks();
                 rasterizer->ProcessDownloadImages();
             }
             release_mem->SignalFence(

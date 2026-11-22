@@ -152,6 +152,12 @@ def derive(game, config, state_path, env):
         updates['GOW3_COPY_GPU_BUFFERS'] = '1'
         updates['GOW3_ASYNC_SHADERS'] = '1'
         updates['GOW3_ASYNC_CAPTURE'] = '1'
+        if 'GOW3_VSYNC' in env:
+            updates['GOW3_VSYNC'] = env['GOW3_VSYNC']
+        elif 'vsync' in ini:
+            updates['GOW3_VSYNC'] = '0' if ini['vsync'] == '0' else '1'
+        else:
+            updates['GOW3_VSYNC'] = '0'
         reason = 'gow2018-fork-active'
         dmem = 7104
         vblank = 60

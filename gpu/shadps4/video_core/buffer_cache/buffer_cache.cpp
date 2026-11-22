@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <array>
 #include <map>
 #include <unordered_map>
@@ -170,6 +172,30 @@ void BufferCache::ExtendWriteFault(VAddr device_addr) {
 }
 
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool assume_locks) {
+    if (is_write && !assume_locks) {
+        const VAddr page_start = Common::AlignDown(device_addr, 4096ULL);
+        const VAddr page_end = Common::AlignUp(device_addr + size, 4096ULL);
+        const u64 page_size = page_end - page_start;
+        bool needs_sync = false;
+        {
+            std::scoped_lock lk{gpu_ranges_mutex};
+            for (const auto& entry : pending_async_downloads) {
+                if (entry.window_start < page_end && page_start < entry.window_end) {
+                    needs_sync = true;
+                    break;
+                }
+            }
+            if (!needs_sync && gpu_modified_ranges.Intersects(page_start, page_size)) {
+                needs_sync = true;
+            }
+        }
+        if (!needs_sync) {
+            memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
+            memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+            return;
+        }
+    }
+
     const auto flush_request = [this, device_addr, size, is_write] {
         const u32 first_block = device_addr >> block_shift;
         const u32 last_block = (device_addr + size - 1) >> block_shift;
@@ -186,13 +212,18 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
                 std::min<VAddr>(Common::AlignUp(device_addr + size, 4096ULL), arena_end);
             const u64 page_size = page_end - page_start;
             bool has_pending = false;
-            for (const auto& entry : pending_async_downloads) {
-                if (entry.window_start < page_end && page_start < entry.window_end) {
-                    has_pending = true;
-                    break;
+            bool has_gpu = false;
+            {
+                std::scoped_lock lk{gpu_ranges_mutex};
+                for (const auto& entry : pending_async_downloads) {
+                    if (entry.window_start < page_end && page_start < entry.window_end) {
+                        has_pending = true;
+                        break;
+                    }
                 }
+                has_gpu = !has_pending && gpu_modified_ranges.Intersects(page_start, page_size);
             }
-            if (!has_pending && !gpu_modified_ranges.Intersects(page_start, page_size)) {
+            if (!has_pending && !has_gpu) {
                 memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
                 memory_tracker->MarkRegionAsCpuModified(device_addr, size);
                 return;
@@ -227,10 +258,28 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
 }
 
 void BufferCache::RetireAsyncDownloads() {
-    while (!pending_async_downloads.empty() &&
-           scheduler.IsFree(pending_async_downloads.front().tick)) {
-        auto entry = std::move(pending_async_downloads.front());
-        pending_async_downloads.pop_front();
+    for (;;) {
+        u64 front_tick = 0;
+        {
+            std::scoped_lock lk{gpu_ranges_mutex};
+            if (pending_async_downloads.empty()) {
+                break;
+            }
+            front_tick = pending_async_downloads.front().tick;
+        }
+        if (!scheduler.IsFree(front_tick)) {
+            break;
+        }
+        AsyncDownload entry{};
+        {
+            std::scoped_lock lk{gpu_ranges_mutex};
+            if (pending_async_downloads.empty() ||
+                pending_async_downloads.front().tick != front_tick) {
+                continue;
+            }
+            entry = std::move(pending_async_downloads.front());
+            pending_async_downloads.pop_front();
+        }
         entry.staging.Invalidate();
         for (const auto& copy : entry.copies) {
             auto* dst_addr = std::bit_cast<u8*>(entry.arena_base + copy.srcOffset);
@@ -239,36 +288,51 @@ void BufferCache::RetireAsyncDownloads() {
                 copy.size);
         }
         staging_pool.FreeDeferred(entry.staging);
+        const u64 win_size = entry.window_end - entry.window_start;
         bool still_pending = false;
-        for (const auto& other : pending_async_downloads) {
-            if (other.window_start < entry.window_end && entry.window_start < other.window_end) {
+        {
+            std::scoped_lock lk{gpu_ranges_mutex};
+            for (const auto& other : pending_async_downloads) {
+                if (other.window_start < entry.window_end && entry.window_start < other.window_end) {
+                    still_pending = true;
+                    break;
+                }
+            }
+            if (!still_pending && gpu_modified_ranges.Intersects(entry.window_start, win_size)) {
                 still_pending = true;
-                break;
             }
         }
-        const u64 win_size = entry.window_end - entry.window_start;
-        if (!still_pending && !gpu_modified_ranges.Intersects(entry.window_start, win_size)) {
+        if (!still_pending) {
             memory_tracker->UnmarkRegionAsGpuModified(entry.window_start, win_size);
         }
     }
 }
 
-void BufferCache::SubmitAsyncDownloads() {
+bool BufferCache::SubmitAsyncDownloads() {
     if (!AsyncBufferReadbackEnabled()) {
-        return;
+        return false;
     }
     RetireAsyncDownloads();
-    if (hot_readback_windows.empty() || pending_async_downloads.size() >= 64) {
-        return;
+    size_t pending_count = 0;
+    {
+        std::scoped_lock lk{gpu_ranges_mutex};
+        pending_count = pending_async_downloads.size();
     }
+    if (hot_readback_windows.empty() || pending_count >= 64) {
+        return false;
+    }
+    bool submitted = false;
     constexpr u64 MaxAsyncBytes = 24_MB;
     for (const auto& [win_start, win_end] : hot_readback_windows) {
-        if (pending_async_downloads.size() >= 64) {
-            break;
-        }
         const u64 win_size = win_end - win_start;
-        if (!gpu_modified_ranges.Intersects(win_start, win_size)) {
-            continue;
+        {
+            std::scoped_lock lk{gpu_ranges_mutex};
+            if (pending_async_downloads.size() >= 64) {
+                break;
+            }
+            if (!gpu_modified_ranges.Intersects(win_start, win_size)) {
+                continue;
+            }
         }
         const u32 first_block = win_start >> block_shift;
         const u32 last_block = (win_end - 1) >> block_shift;
@@ -301,13 +365,17 @@ void BufferCache::SubmitAsyncDownloads() {
                 });
                 total_size_bytes += aligned_size;
             };
+            std::scoped_lock lk{gpu_ranges_mutex};
             gpu_modified_ranges.ForEachInRange(address, size, add_download);
         });
         if (total_size_bytes == 0) {
             continue;
         }
-        for (const auto& copy : copies) {
-            gpu_modified_ranges.Subtract(arena_base + copy.srcOffset, copy.size);
+        {
+            std::scoped_lock lk{gpu_ranges_mutex};
+            for (const auto& copy : copies) {
+                gpu_modified_ranges.Subtract(arena_base + copy.srcOffset, copy.size);
+            }
         }
         const auto download =
             staging_pool.Request(total_size_bytes, VideoCore::MemoryType::HostCached, 0, true);
@@ -315,15 +383,20 @@ void BufferCache::SubmitAsyncDownloads() {
             copy.dstOffset += download.offset;
         }
         runtime.CopyBuffer(arena, download.buffer, copies);
-        pending_async_downloads.push_back(AsyncDownload{
-            .window_start = win_start,
-            .window_end = win_end,
-            .arena_base = arena_base,
-            .tick = scheduler.CurrentTick(),
-            .staging = download,
-            .copies = std::move(copies),
-        });
+        {
+            std::scoped_lock lk{gpu_ranges_mutex};
+            pending_async_downloads.push_back(AsyncDownload{
+                .window_start = win_start,
+                .window_end = win_end,
+                .arena_base = arena_base,
+                .tick = scheduler.CurrentTick(),
+                .staging = download,
+                .copies = std::move(copies),
+            });
+        }
+        submitted = true;
     }
+    return submitted;
 }
 
 void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 size) {
@@ -344,9 +417,12 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     }
 
     u64 pending_tick = 0;
-    for (const auto& entry : pending_async_downloads) {
-        if (entry.window_start < window_end && device_addr < entry.window_end) {
-            pending_tick = std::max(pending_tick, entry.tick);
+    {
+        std::scoped_lock lk{gpu_ranges_mutex};
+        for (const auto& entry : pending_async_downloads) {
+            if (entry.window_start < window_end && device_addr < entry.window_end) {
+                pending_tick = std::max(pending_tick, entry.tick);
+            }
         }
     }
 
@@ -367,12 +443,24 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
             constexpr u64 mask = ~(align - 1ULL);
             total_size_bytes += (new_size + align - 1) & mask;
         };
+        std::scoped_lock lk{gpu_ranges_mutex};
         gpu_modified_ranges.ForEachInRange(address, size, add_download);
         gpu_modified_ranges.Subtract(address, size);
     });
+
+    static std::atomic<u32> wait_log_count{0};
     if (total_size_bytes == 0) {
         if (pending_tick != 0) {
             if (!scheduler.IsFree(pending_tick)) {
+                if (wait_log_count.load(std::memory_order_relaxed) < 10) {
+                    const u32 idx = wait_log_count.fetch_add(1, std::memory_order_relaxed);
+                    if (idx < 10) {
+                        std::printf("GOW3_BUF_WAIT #%u kind=async addr=%#llx size=%llu tick=%llu\n",
+                                    idx + 1, static_cast<unsigned long long>(device_addr),
+                                    static_cast<unsigned long long>(size),
+                                    static_cast<unsigned long long>(pending_tick));
+                    }
+                }
                 scheduler.Wait(pending_tick);
             }
             RetireAsyncDownloads();
@@ -385,7 +473,19 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
         copy.dstOffset += download.offset;
     }
     runtime.CopyBuffer(arena, download.buffer, copies);
-    scheduler.Finish();
+    const u64 copy_tick = scheduler.CurrentTick();
+    if (wait_log_count.load(std::memory_order_relaxed) < 10) {
+        const u32 idx = wait_log_count.fetch_add(1, std::memory_order_relaxed);
+        if (idx < 10) {
+            std::printf("GOW3_BUF_WAIT #%u kind=sync addr=%#llx size=%llu bytes=%llu tick=%llu\n",
+                        idx + 1, static_cast<unsigned long long>(device_addr),
+                        static_cast<unsigned long long>(size),
+                        static_cast<unsigned long long>(total_size_bytes),
+                        static_cast<unsigned long long>(copy_tick));
+        }
+    }
+    scheduler.Flush();
+    scheduler.Wait(copy_tick);
     RetireAsyncDownloads();
 
     download.buffer->Invalidate(download.offset, download.size);
@@ -546,6 +646,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
             Gow3Stats::buffer_upload_bytes.load(std::memory_order_relaxed) - uploaded_before;
     }
     if (is_written) {
+        std::scoped_lock lk{gpu_ranges_mutex};
         gpu_modified_ranges.Add(device_addr, size);
     }
     return {arena, arena->Offset(device_addr)};
@@ -576,6 +677,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBufferRanges(
         }, [&] { staging = UploadCopies(arena, copies, bytes); });
     if (staging) runtime.CopyBuffer(staging, arena, copies);
     if (is_written) {
+        std::scoped_lock lk{gpu_ranges_mutex};
         for (auto [offset, length] : *normalized) gpu_modified_ranges.Add(device_addr + offset, length);
     }
     return {arena, arena->Offset(device_addr)};

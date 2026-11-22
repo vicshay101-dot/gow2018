@@ -127,7 +127,7 @@ internal object LaunchParams {
                 LaunchOption("0", R.string.param_option_off),
                 LaunchOption("1", R.string.param_option_on),
             ),
-            defaultValue = "1",
+            defaultValue = "0",
             descriptionRes = R.string.param_desc_vsync,
         ),
         LaunchParam(
