@@ -52,8 +52,6 @@ public:
         guest_sync_epoch.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void FlushHotAsyncReadbacks();
-
     [[nodiscard]] Runtime& GetRuntime() noexcept {
         return runtime;
     }

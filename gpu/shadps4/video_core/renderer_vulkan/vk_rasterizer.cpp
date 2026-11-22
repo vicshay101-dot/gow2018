@@ -1507,12 +1507,6 @@ void Rasterizer::OnSubmit() {
     runtime.TickFrame();
 }
 
-void Rasterizer::FlushHotAsyncReadbacks() {
-    if (buffer_cache.SubmitAsyncDownloads()) {
-        Flush();
-    }
-}
-
 const PreparedStage* Rasterizer::FindPreparedStage(const Shader::Info& stage) const {
     // Sharps a draw-preparation worker read from the same flattened user data.
     if (!bind_prepared || Gow3Toggle::Disabled(Gow3Toggle::PreparedResources)) {

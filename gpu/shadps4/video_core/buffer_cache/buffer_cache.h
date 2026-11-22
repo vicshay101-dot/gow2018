@@ -7,7 +7,6 @@
 #include "video_core/buffer_cache/copy_ranges.h"
 
 #include <deque>
-#include <mutex>
 #include <boost/container/small_vector.hpp>
 
 #include "common/interval_set.h"
@@ -120,7 +119,7 @@ public:
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 
     /// Enqueues non-blocking GPU->staging copies for hot readback windows prior to submit.
-    bool SubmitAsyncDownloads();
+    void SubmitAsyncDownloads();
 
     /// Completes any finished async buffer downloads into guest RAM without stalling.
     void RetireAsyncDownloads();
@@ -184,7 +183,6 @@ private:
 
     StreamBuffer stream_buffer;
     Buffer gds_buffer;
-    mutable std::mutex gpu_ranges_mutex;
     RangeSet gpu_modified_ranges;
     std::deque<AsyncDownload> pending_async_downloads;
     std::vector<std::pair<VAddr, VAddr>> hot_readback_windows;
