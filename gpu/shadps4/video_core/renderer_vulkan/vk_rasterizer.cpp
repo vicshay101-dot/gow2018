@@ -1402,7 +1402,10 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline, const DrawPredi
 
     scheduler.EndRendering();
     mark();
-    pipeline->BindResources(set_writes, push_data);
+    pipeline->BindResources(
+        set_writes, push_data,
+        std::span<const vk::DescriptorBufferInfo>{buffer_infos.data(), buffer_infos.size()},
+        std::span<const vk::DescriptorImageInfo>{image_infos.data(), image_infos.size()});
 
     const vk::Pipeline handle = pipeline->Handle();
     const u32 dim_x = cs_program.dim_x, dim_y = cs_program.dim_y, dim_z = cs_program.dim_z;

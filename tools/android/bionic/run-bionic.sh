@@ -135,23 +135,27 @@ if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow
     export GOW3_PATCH_INPUT_RES=${GOW3_PATCH_INPUT_RES:-640x360}
     export GOW3_SCREEN_W=${GOW3_SCREEN_W:-640}
     export GOW3_SCREEN_H=${GOW3_SCREEN_H:-360}
-    export GOW3_READBACKS=1
+    export GOW3_READBACKS=${GOW3_READBACKS:-1}
     export GOW3_ASYNC_BUFFER_READBACK=${GOW3_ASYNC_BUFFER_READBACK:-1}
     export GOW3_ADPF=${GOW3_ADPF:-1}
     export GOW3_DRAW_PIPE=${GOW3_DRAW_PIPE:-0}
     export GOW3_COALESCE_COMPUTE_BARRIERS=${GOW3_COALESCE_COMPUTE_BARRIERS:-0}
-    export GOW3_READBACK_LINEAR=0
-    export GOW3_DEFERRED_READBACK=0
-    export GOW3_STALE_READBACK=0
-    export GOW3_HOT_PAGES=0
+    export GOW3_READBACK_LINEAR=${GOW3_READBACK_LINEAR:-0}
+    export GOW3_DEFERRED_READBACK=${GOW3_DEFERRED_READBACK:-0}
+    export GOW3_STALE_READBACK=${GOW3_STALE_READBACK:-0}
+    export GOW3_HOT_PAGES=${GOW3_HOT_PAGES:-0}
     export GOW3_PREP_WORKERS=${GOW3_PREP_WORKERS:-2}
     export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-1}
-    export GOW3_FAULT_WINDOW=1024
-    export GOW3_COPY_GPU_BUFFERS=1
-    export GOW3_ASYNC_SHADERS=1
-    export GOW3_ASYNC_CAPTURE=1
-    export GOW3_SHADOWS=0
+    export GOW3_FAULT_WINDOW=${GOW3_FAULT_WINDOW:-1024}
+    export GOW3_COPY_GPU_BUFFERS=${GOW3_COPY_GPU_BUFFERS:-1}
+    export GOW3_ASYNC_SHADERS=${GOW3_ASYNC_SHADERS:-1}
+    export GOW3_ASYNC_CAPTURE=${GOW3_ASYNC_CAPTURE:-1}
+    export GOW3_SHADOWS=${GOW3_SHADOWS:-0}
 fi
+
+# Allow user gow3.env to override any settings at runtime without rebuild:
+[ -f "$base/gow3.env" ] && . "$base/gow3.env"
+[ -r /storage/emulated/0/Download/Logs/gow3.env ] && . /storage/emulated/0/Download/Logs/gow3.env
 
 echo "GOW3_NATIVE_RESOLUTION: status=${GOW3_RESOLUTION_STATUS:-unknown} eboot_res=${GOW3_GOW2018_EBOOT_RES:-0}(${GOW3_PATCH_INPUT_RES:-native}) screen=${GOW3_SCREEN_W:-0}x${GOW3_SCREEN_H:-0} readbacks=${GOW3_READBACKS:-1} async_buf=${GOW3_ASYNC_BUFFER_READBACK:-0} draw_pipe=${GOW3_DRAW_PIPE:-0} cs_coalesce=${GOW3_COALESCE_COMPUTE_BARRIERS:-0} hot_pages=${GOW3_HOT_PAGES:-0} prep=${GOW3_PREP_WORKERS:-0}"
 echo "Game language: system_param=${GOW3_LANGUAGE:-1} (1=English, 7=Portuguese, 17=Portuguese-Brazil)"

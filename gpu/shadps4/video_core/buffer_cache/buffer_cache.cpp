@@ -171,20 +171,35 @@ void BufferCache::ExtendWriteFault(VAddr device_addr) {
 
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool assume_locks) {
     const auto flush_request = [this, device_addr, size, is_write] {
+        if (is_write) {
+            static const bool download_on_write = [] {
+                const char* env = std::getenv("GOW3_DOWNLOAD_ON_WRITE");
+                return env && env[0] == '1';
+            }();
+            if (!download_on_write) {
+                gpu_modified_ranges.Subtract(device_addr, size);
+                memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
+                memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+                return;
+            }
+        }
         const u32 first_block = device_addr >> block_shift;
         const u32 last_block = (device_addr + size - 1) >> block_shift;
         const auto* arena = GetArena(first_block, last_block);
 
-        // GPU-modified ranges come as many small scattered islands,
-        // so the download is widened to a window around the request.
-        // On Android, a wider window coalesces multiple per-frame GPU buffer
-        // downloads into a single scheduler.Finish() without copying extra bytes.
+        // GPU-modified ranges come as many small scattered islands.
+        // On Android, keeping this window compact avoids massive multi-MB staging
+        // allocations and GPU pipeline drains.
         static const u64 WindowSize = [] {
             if (const char* env = std::getenv("GOW3_DOWNLOAD_WINDOW_MB")) {
                 const u64 mb = std::strtoull(env, nullptr, 10);
                 if (mb > 0) return std::clamp<u64>(mb, 1, 64) * 1_MB;
             }
-            return std::getenv("GOW3_ANDROID_PORT") ? 16_MB : 512_KB;
+            if (const char* env = std::getenv("GOW3_DOWNLOAD_WINDOW_KB")) {
+                const u64 kb = std::strtoull(env, nullptr, 10);
+                if (kb > 0) return kb * 1_KB;
+            }
+            return 512_KB;
         }();
         const VAddr arena_end = arena->cpu_addr + arena->size_bytes;
         const VAddr window_start =

@@ -58,10 +58,13 @@ public:
     }
 
     using DescriptorWrites = std::vector<vk::WriteDescriptorSet>;
-    void BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data) const;
+    void BindResources(DescriptorWrites& set_writes, const Shader::PushData& push_data,
+                       std::span<const vk::DescriptorBufferInfo> source_buffers = {},
+                       std::span<const vk::DescriptorImageInfo> source_images = {}) const;
 
 protected:
     [[nodiscard]] std::string GetDebugString() const;
+    void InitializeBufferDescriptorTemplate(u32 buffer_count);
 
     const Instance& instance;
     Scheduler& scheduler;
@@ -70,6 +73,8 @@ protected:
     vk::UniquePipeline pipeline;
     vk::UniquePipelineLayout pipeline_layout;
     vk::UniqueDescriptorSetLayout desc_layout;
+    vk::UniqueDescriptorUpdateTemplate buffer_descriptor_template;
+    u32 buffer_descriptor_count = 0;
     std::array<const Shader::Info*, Shader::MaxStageTypes> stages{};
     bool uses_push_descriptors{};
     bool is_compute;

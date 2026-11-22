@@ -7,6 +7,7 @@
 #include <boost/container/static_vector.hpp>
 
 #include "shader_recompiler/resource.h"
+#include "video_core/renderer_vulkan/gow3_buffer_descriptor_template.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_pipeline_common.h"
@@ -22,9 +23,43 @@ Pipeline::Pipeline(const Instance& instance_, Scheduler& scheduler_, DescriptorH
 
 Pipeline::~Pipeline() = default;
 
+void Pipeline::InitializeBufferDescriptorTemplate(u32 buffer_count) {
+    if (!uses_push_descriptors || buffer_count < 4 ||
+        !VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateDescriptorUpdateTemplate ||
+        !VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdPushDescriptorSetWithTemplateKHR) {
+        return;
+    }
+    std::vector<vk::DescriptorUpdateTemplateEntry> entries;
+    entries.reserve(buffer_count);
+    for (u32 i = 0; i < buffer_count; ++i) {
+        entries.push_back(vk::DescriptorUpdateTemplateEntry{
+            .dstBinding = i,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eStorageBuffer,
+            .offset = i * sizeof(vk::DescriptorBufferInfo),
+            .stride = sizeof(vk::DescriptorBufferInfo),
+        });
+    }
+    const vk::DescriptorUpdateTemplateCreateInfo info{
+        .descriptorUpdateEntryCount = buffer_count,
+        .pDescriptorUpdateEntries = entries.data(),
+        .templateType = vk::DescriptorUpdateTemplateType::ePushDescriptorsKHR,
+        .pipelineBindPoint = vk::PipelineBindPoint::eCompute,
+        .pipelineLayout = *pipeline_layout,
+        .set = 0,
+    };
+    auto [result, update] = instance.GetDevice().createDescriptorUpdateTemplateUnique(info);
+    if (result == vk::Result::eSuccess) {
+        buffer_descriptor_template = std::move(update);
+        buffer_descriptor_count = buffer_count;
+    }
+}
 
 void Pipeline::BindResources(DescriptorWrites& set_writes,
-                             const Shader::PushData& push_data) const {
+                             const Shader::PushData& push_data,
+                             std::span<const vk::DescriptorBufferInfo> source_buffers,
+                             std::span<const vk::DescriptorImageInfo> source_images) const {
     const auto bind_point =
         IsCompute() ? vk::PipelineBindPoint::eCompute : vk::PipelineBindPoint::eGraphics;
     const auto stage_flags = IsCompute() ? vk::ShaderStageFlagBits::eCompute : AllGraphicsStageBits;
@@ -39,6 +74,19 @@ void Pipeline::BindResources(DescriptorWrites& set_writes,
     }
 
     if (uses_push_descriptors) {
+        if (buffer_descriptor_template && source_images.empty() &&
+            Detail::MatchesBufferDescriptorTemplate(
+                std::span<const vk::WriteDescriptorSet>{set_writes}, source_buffers,
+                buffer_descriptor_count, vk::DescriptorType::eStorageBuffer)) {
+            scheduler.ReserveRecordData(source_buffers.size_bytes() +
+                                        alignof(vk::DescriptorBufferInfo) + 64);
+            const auto buffers = scheduler.RecordData(source_buffers);
+            const vk::DescriptorUpdateTemplate update = *buffer_descriptor_template;
+            scheduler.Record([update, layout, buffers](vk::CommandBuffer cmdbuf) {
+                cmdbuf.pushDescriptorSetWithTemplateKHR(update, layout, 0, buffers.data());
+            });
+            return;
+        }
         if (!scheduler.IsRecordingDeferred()) {
             scheduler.Record([&](vk::CommandBuffer cmdbuf) {
                 cmdbuf.pushDescriptorSetKHR(bind_point, layout, 0, set_writes);
