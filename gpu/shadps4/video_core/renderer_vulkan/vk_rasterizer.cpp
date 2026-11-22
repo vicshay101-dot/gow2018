@@ -1958,10 +1958,8 @@ void Rasterizer::ResetBindings(bool is_compute) {
         texture_cache.GetImage(image_id).binding = {};
     }
     for (const auto [buffer, offset, size, is_written] : bound_buffers) {
-        const auto dst_stage =
-            is_compute ? vk::PipelineStageFlags2{vk::PipelineStageFlagBits2::eComputeShader}
-                       : (vk::PipelineStageFlagBits2::ePreRasterizationShaders |
-                          vk::PipelineStageFlagBits2::eFragmentShader);
+        const auto dst_stage = is_compute ? vk::PipelineStageFlagBits2::eComputeShader
+                                          : vk::PipelineStageFlagBits2::eAllGraphics;
         const auto write_flag =
             is_written ? vk::AccessFlagBits2::eShaderWrite : vk::AccessFlagBits2::eNone;
         runtime.AccessBuffer(buffer, offset, size, dst_stage,
