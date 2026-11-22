@@ -1382,10 +1382,8 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline, const DrawPredi
     }
 
     static const bool coalesce_compute_barriers = [] {
-        if (const char* env = std::getenv("GOW3_COALESCE_COMPUTE_BARRIERS")) {
-            return env[0] == '1';
-        }
-        return std::getenv("GOW3_ANDROID_PORT") != nullptr;
+        const char* env = std::getenv("GOW3_COALESCE_COMPUTE_BARRIERS");
+        return env && env[0] == '1';
     }();
     const bool same_unsynced_batch =
         coalesce_compute_barriers && cs.pgm_hash != 0 &&
@@ -3000,13 +2998,10 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         ASSERT(desc.view_info.range.extent.levels == 1 && !image.binding.needs_rebind);
 
         const bool has_stencil = image.info.props.has_stencil;
-        // Only transition depth to ReadOnly layouts when the depth image is simultaneously bound
-        // as a shader resource (attachment feedback). Keeping AttachmentOptimal across draws that
-        // toggle depth/stencil writes avoids breaking the G-buffer render pass on TBDR GPUs.
-        const bool keep_rw_layout = desc.view_info.is_storage || !image.binding.is_bound;
+        // Stencil writes can be enabled while depth writes are off.
         const bool stencil_write =
-            has_stencil && regs.depth_control.stencil_enable && !keep_rw_layout;
-        const auto new_layout = keep_rw_layout
+            has_stencil && regs.depth_control.stencil_enable && !desc.view_info.is_storage;
+        const auto new_layout = desc.view_info.is_storage
                                     ? has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
                                                   : vk::ImageLayout::eDepthAttachmentOptimal
                                 : stencil_write

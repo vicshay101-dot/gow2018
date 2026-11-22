@@ -127,19 +127,19 @@ def derive(game, config, state_path, env):
         updates['GOW3_GAME_VERSION'] = identity_check.get('app_version') or '01.00'
         updates['GOW3_PATCH_STATUS'] = 'gow2018-fork-active'
         eboot_res_enabled = env.get('GOW3_GOW2018_EBOOT_RES', '1')
-        patch_res = env.get('GOW3_PATCH_INPUT_RES', '1024x576')
+        patch_res = env.get('GOW3_PATCH_INPUT_RES', '640x360')
         updates['GOW3_GOW2018_EBOOT_RES'] = eboot_res_enabled
         if eboot_res_enabled == '1' and patch_res:
             updates['GOW3_PATCH_INPUT_RES'] = patch_res
             updates['GOW3_RESOLUTION_STATUS'] = f'gow2018-native-{patch_res}'
-            default_w, default_h = patch_res.split('x') if 'x' in patch_res else ('1024', '576')
+            default_w, default_h = patch_res.split('x') if 'x' in patch_res else ('640', '360')
         else:
             updates['GOW3_RESOLUTION_STATUS'] = 'gow2018-clean-render'
             default_w, default_h = '960', '540'
         updates['GOW3_READBACKS'] = env.get('GOW3_READBACKS', '1')
         updates['GOW3_ASYNC_BUFFER_READBACK'] = env.get('GOW3_ASYNC_BUFFER_READBACK', '1')
         updates['GOW3_DRAW_PIPE'] = env.get('GOW3_DRAW_PIPE', '1')
-        updates['GOW3_COALESCE_COMPUTE_BARRIERS'] = env.get('GOW3_COALESCE_COMPUTE_BARRIERS', '1')
+        updates['GOW3_COALESCE_COMPUTE_BARRIERS'] = env.get('GOW3_COALESCE_COMPUTE_BARRIERS', '0')
         updates['GOW3_DEFERRED_READBACK'] = '0'
         updates['GOW3_STALE_READBACK'] = '0'
         updates['GOW3_READBACK_LINEAR'] = '0'
