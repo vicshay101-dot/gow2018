@@ -238,7 +238,7 @@ void BufferCache::SubmitAsyncDownloads() {
     if (hot_readback_windows.empty() || pending_async_downloads.size() >= 16) {
         return;
     }
-    constexpr u64 MaxAsyncBytes = 8_MB;
+    constexpr u64 MaxAsyncBytes = 24_MB;
     for (const auto& [win_start, win_end] : hot_readback_windows) {
         if (pending_async_downloads.size() >= 16) {
             break;
@@ -253,13 +253,13 @@ void BufferCache::SubmitAsyncDownloads() {
         const VAddr arena_base = arena->cpu_addr;
         boost::container::small_vector<vk::BufferCopy, 4> copies;
         u64 total_size_bytes = 0;
-        bool overflow = false;
+        bool limit_reached = false;
         memory_tracker->ForEachDownloadRange<false>(win_start, win_size, [&](u64 address, u64 size) {
-            if (overflow) {
+            if (limit_reached) {
                 return;
             }
             const auto add_download = [&](VAddr start, VAddr end) {
-                if (overflow) {
+                if (limit_reached) {
                     return;
                 }
                 const u64 new_offset = start - arena_base;
@@ -267,8 +267,8 @@ void BufferCache::SubmitAsyncDownloads() {
                 constexpr u64 align = 64ULL;
                 constexpr u64 mask = ~(align - 1ULL);
                 const u64 aligned_size = (new_size + align - 1) & mask;
-                if (total_size_bytes + aligned_size > MaxAsyncBytes) {
-                    overflow = true;
+                if (total_size_bytes + aligned_size > MaxAsyncBytes && !copies.empty()) {
+                    limit_reached = true;
                     return;
                 }
                 copies.push_back(vk::BufferCopy{
@@ -280,7 +280,7 @@ void BufferCache::SubmitAsyncDownloads() {
             };
             gpu_modified_ranges.ForEachInRange(address, size, add_download);
         });
-        if (overflow || total_size_bytes == 0) {
+        if (total_size_bytes == 0) {
             continue;
         }
         for (const auto& copy : copies) {
