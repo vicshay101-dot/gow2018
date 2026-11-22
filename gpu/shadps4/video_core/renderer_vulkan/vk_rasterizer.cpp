@@ -1056,8 +1056,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     PrepareRenderState(pipeline);
     {
         bool has_color = false;
-        for (const auto& cb : cb_descs) {
-            if (cb.first) {
+        for (s32 cb = 0; cb < std::bit_width(pipeline->GetGraphicsKey().mrt_mask); ++cb) {
+            if (cb_descs[cb].first) {
                 has_color = true;
                 break;
             }
@@ -1305,8 +1305,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     PrepareRenderState(pipeline);
     {
         bool has_color = false;
-        for (const auto& cb : cb_descs) {
-            if (cb.first) {
+        for (s32 cb = 0; cb < std::bit_width(pipeline->GetGraphicsKey().mrt_mask); ++cb) {
+            if (cb_descs[cb].first) {
                 has_color = true;
                 break;
             }
