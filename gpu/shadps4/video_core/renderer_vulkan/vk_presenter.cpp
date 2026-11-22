@@ -176,8 +176,9 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     // progress). Otherwise rebuilding them takes up to minutes before the first game frame:
     // show what is happening instead of a black window.
     const char* background_warmup = std::getenv("GOW3_BACKGROUND_WARMUP");
-    if ((!background_warmup || *background_warmup != '0') &&
-        rasterizer->GetPipelineCache().StartBackgroundWarmUp()) {
+    const bool bg_default = std::getenv("GOW3_ANDROID_PORT") == nullptr;
+    const bool use_bg = background_warmup ? (*background_warmup != '0') : bg_default;
+    if (use_bg && rasterizer->GetPipelineCache().StartBackgroundWarmUp()) {
         return;
     }
     Gow3Overlay::SetLoading(true, 0, 0);

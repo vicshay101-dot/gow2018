@@ -117,6 +117,49 @@ bool IsKnownFormat(AmdGpu::DataFormat data_fmt, AmdGpu::NumberFormat num_fmt) {
     const u32 d = static_cast<u32>(data_fmt), n = static_cast<u32>(num_fmt);
     return d < 256 && n < 256 && tables.first[d] && tables.second[n];
 }
+bool ShouldSkipShadowAtlas(VideoCore::TextureCache& texture_cache,
+                           VideoCore::ImageId depth_id, bool has_color) {
+    if (has_color || !depth_id) {
+        return false;
+    }
+    static const u32 rate = [] {
+        if (const char* env = std::getenv("GOW3_SHADOW_RATE")) {
+            return static_cast<u32>(std::strtoul(env, nullptr, 10));
+        }
+        return std::getenv("GOW3_ANDROID_PORT") ? 4u : 1u;
+    }();
+    if (rate == 1u) {
+        return false;
+    }
+    const auto& depth = texture_cache.GetImage(depth_id);
+    if (depth.info.size.width < 4096u || depth.info.size.height < 2048u) {
+        return false;
+    }
+    const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
+    static VAddr last_shadow_addr = 0;
+    static u64 last_render_frame = ~0ULL;
+    static u64 skipped_draws = 0;
+    if (depth.info.guest_address != last_shadow_addr) {
+        last_shadow_addr = depth.info.guest_address;
+        last_render_frame = frame;
+        return false;
+    }
+    if (last_render_frame == ~0ULL || frame == last_render_frame) {
+        last_render_frame = frame;
+        return false;
+    }
+    if (rate > 0u && (frame - last_render_frame) >= rate) {
+        last_render_frame = frame;
+        return false;
+    }
+    if ((++skipped_draws & 4095u) == 1u) {
+        std::printf("GOW3_SHADOW_THROTTLE: rate=%u skipped=%llu (%ux%u)\n",
+                    rate, static_cast<unsigned long long>(skipped_draws),
+                    depth.info.size.width, depth.info.size.height);
+    }
+    return true;
+}
+
 } // namespace
 
 bool Rasterizer::FilterDraw() {
@@ -1011,6 +1054,23 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     motion_geometry = 0;
 
     PrepareRenderState(pipeline);
+    {
+        bool has_color = false;
+        for (const auto& cb : cb_descs) {
+            if (cb.first) {
+                has_color = true;
+                break;
+            }
+        }
+        if (ShouldSkipShadowAtlas(texture_cache, db_desc.first, has_color)) {
+            for (const auto id : bound_images) {
+                texture_cache.GetImage(id).binding.is_target = 0u;
+            }
+            bound_images.clear();
+            bind_prepared = nullptr;
+            return;
+        }
+    }
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
         const auto& viewport = Regs().viewports[0];
         upscaler->OnDraw(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
@@ -1243,6 +1303,22 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     motion_draw = false;
     motion_geometry = 0;
     PrepareRenderState(pipeline);
+    {
+        bool has_color = false;
+        for (const auto& cb : cb_descs) {
+            if (cb.first) {
+                has_color = true;
+                break;
+            }
+        }
+        if (ShouldSkipShadowAtlas(texture_cache, db_desc.first, has_color)) {
+            for (const auto id : bound_images) {
+                texture_cache.GetImage(id).binding.is_target = 0u;
+            }
+            bound_images.clear();
+            return;
+        }
+    }
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
         const auto& viewport = Regs().viewports[0];
         upscaler->OnDraw(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
