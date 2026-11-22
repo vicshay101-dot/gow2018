@@ -521,6 +521,8 @@ public final class GameActivity extends Activity {
         if (updateDir!=null) env.put("GOW3_PATCH_DIR",updateDir);
         if (target.endsWith("/Xvfb")) env.put("LD_PRELOAD",ROOT+"/usr/lib/fexdroid/libfxpath.so");
         env.put("LIBGL_DRIVERS_PATH",ROOT+"/usr/lib/aarch64-linux-gnu/dri");
+        env.put("GOW3_GPU_PROFILE","1");
+        env.put("GOW3_BUFFER_STATS","1");
         return b.start();
     }
     private void startX(SurfaceHolder holder) {
