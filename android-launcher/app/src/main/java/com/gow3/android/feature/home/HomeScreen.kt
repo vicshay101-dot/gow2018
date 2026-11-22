@@ -55,7 +55,7 @@ internal fun HomeScreen(
     onChangeLanguage: (String) -> Unit,
 ) {
     val context = LocalContext.current
-    val isBionic = context.packageName == "com.gow3.android.bionic"
+    val isBionic = context.packageName == "com.ludashi.aibench"
     var iniValues by remember { mutableStateOf(loadIni(context)) }
     var gameDir by remember(pkgGeneration) { mutableStateOf(currentGameDir(context)) }
     var updateDir by remember(pkgGeneration) { mutableStateOf(currentUpdateDir(context)) }

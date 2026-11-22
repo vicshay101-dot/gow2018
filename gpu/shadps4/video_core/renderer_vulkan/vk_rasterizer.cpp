@@ -14,6 +14,7 @@
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/renderer_vulkan/gow3_adpf.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_depth_stencil_state.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -3744,6 +3745,9 @@ void Rasterizer::MarkPass(const GraphicsPipeline* pipeline, const RenderState& s
 }
 
 void Rasterizer::NoteFrameStart() {
+    Gow3Adpf::OnFrame(static_cast<int32_t>(liverpool->GetGpuCommandProcessorThreadId()),
+                      draw_pipe ? static_cast<int32_t>(draw_pipe->StageBThreadId()) : 0,
+                      static_cast<int32_t>(scheduler.RecorderThreadId()));
     if (auto* profiler = GpuProfiler::Get()) {
         profiler->BeginFrame();
     }

@@ -92,7 +92,7 @@ public final class GameActivity extends Activity {
         immersive();
     }
 
-    private boolean bionicRuntime() { return "com.gow3.android.bionic".equals(getPackageName()); }
+    private boolean bionicRuntime() { return "com.ludashi.aibench".equals(getPackageName()); }
 
     private boolean runtimeReady;
 

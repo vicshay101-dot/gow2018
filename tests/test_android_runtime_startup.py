@@ -56,7 +56,7 @@ class GameActivity {
  boolean destroyed,startingX,runtimeReady,installed;
  int shmid=-1,bionicStarts,xStarts,attachments,errors;
  final String FILES="unused-fixture-path";
- String packageName="com.gow3.android.bionic";
+ String packageName="com.ludashi.aibench";
  Queue main=new Queue(),worker=new Queue();
  SurfaceHolder surface=new SurfaceHolder(); Text status=new Text();
  String getPackageName() { return packageName; }

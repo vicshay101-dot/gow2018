@@ -13,7 +13,7 @@ import java.util.*;
 /** Launcher selection and launch environment for the Bionic ICD/HAL loader. */
 public final class GpuDriverManager {
     private GpuDriverManager() {}
-    public static boolean supported(Context context) { return "com.gow3.android.bionic".equals(context.getPackageName()); }
+    public static boolean supported(Context context) { return "com.ludashi.aibench".equals(context.getPackageName()); }
     private static File root(Context context) { return new File(context.getFilesDir(),"gpu-drivers"); }
     public static String selected(Context context) {
         return context.getSharedPreferences("gow3",Context.MODE_PRIVATE).getString("gpu_driver","auto");

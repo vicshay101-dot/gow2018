@@ -35,7 +35,7 @@ class RuntimeInstallTests(unittest.TestCase):
             if bionic:
                 manifest = {
                     'schema': 1, 'runtime_backend': 'bionic',
-                    'application_id': 'com.gow3.android.bionic', 'java_package': 'ro.cobrabm.fexdroid',
+                    'application_id': 'com.ludashi.aibench', 'java_package': 'ro.cobrabm.fexdroid',
                     'required_paths': [
                         {'path': 'gow3port/'+p, 'type': 'executable'} for p in [
                             'run-bionic.sh','arm64/bin/gow3-probe','arm64/bin/gow3-prepare',

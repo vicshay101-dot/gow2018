@@ -19,7 +19,7 @@ android {
         versionName = "2.1.6-daedalus.4"
         manifestPlaceholders["appLabel"] = "@string/app_name"
         if (bionicRuntime) {
-            applicationId = "com.gow3.android.bionic"
+            applicationId = "com.ludashi.aibench"
             minSdk = 30
             versionName = "2.1.6-daedalus.4-bionic"
             manifestPlaceholders["appLabel"] = "God of War (2018)"

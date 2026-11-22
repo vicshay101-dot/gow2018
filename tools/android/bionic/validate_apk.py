@@ -43,7 +43,7 @@ def validate_payload(payload, expected_hash):
                     raise ValueError(f'Runtime executable bit missing: {name}')
         identity = json.load(archive.extractfile('runtime-manifest.json'))
         if (identity.get('schema'),identity.get('runtime_backend'),identity.get('application_id')) != (
-                1,'bionic','com.gow3.android.bionic'):
+                1,'bionic','com.ludashi.aibench'):
             raise ValueError('Wrong Bionic runtime identity')
         for key, directory in [('driver', 'gen8'), ('adreno7xx_driver', 'adreno7xx')]:
             spec = identity[key]
@@ -59,7 +59,7 @@ def main():
     p.add_argument('--aapt',required=True)
     a=p.parse_args()
     badging=subprocess.check_output([a.aapt,'dump','badging',str(a.apk)],text=True)
-    for expected in ["name='com.gow3.android.bionic'","sdkVersion:'30'","targetSdkVersion:'28'",
+    for expected in ["name='com.ludashi.aibench'","sdkVersion:'30'","targetSdkVersion:'28'",
                      "native-code: 'arm64-v8a'","versionName='2.1.6-daedalus.4-bionic'"]:
         if expected not in badging:raise ValueError('APK identity mismatch: '+expected)
     with zipfile.ZipFile(a.apk) as apk:

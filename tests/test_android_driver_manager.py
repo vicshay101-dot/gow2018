@@ -27,7 +27,7 @@ public class Context {
  final File files; public final Prefs prefs=new Prefs();
  public Context(File files) { this.files=files; }
  public File getFilesDir() { return files; }
- public String getPackageName() { return "com.gow3.android.bionic"; }
+ public String getPackageName() { return "com.ludashi.aibench"; }
  public String getString(int id) { return "fixture error "+id; }
  public Prefs getSharedPreferences(String n,int mode) { return prefs; }
  public ContentResolver getContentResolver() { return new ContentResolver(); }

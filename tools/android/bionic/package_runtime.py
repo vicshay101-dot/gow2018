@@ -68,7 +68,7 @@ def main():
         jni = source/'apk-jni/arm64-v8a'
         jni.mkdir(parents=True,exist_ok=True)
         shutil.copy2(runtime/'lib/libgow3present.so',jni/'libgow3present.so')
-        manifest={'schema':1,'runtime_backend':'bionic','application_id':'com.gow3.android.bionic',
+        manifest={'schema':1,'runtime_backend':'bionic','application_id':'com.ludashi.aibench',
                   'java_package':'ro.cobrabm.fexdroid','runtime_name':'daedalus-gow3-bionic-2.1.6-r4',
                   'version':'2.1.6-daedalus.4-bionic','min_api':30,
                   'driver':json.loads((ROOT/'tools/android/bionic/driver.json').read_text()),

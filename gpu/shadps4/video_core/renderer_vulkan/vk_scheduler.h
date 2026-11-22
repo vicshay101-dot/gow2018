@@ -903,6 +903,11 @@ private:
 
     void PriorityPendingOpsThread(std::stop_token stoken);
 
+public:
+    [[nodiscard]] u32 RecorderThreadId() const noexcept {
+        return recorder_tid.load(std::memory_order_acquire);
+    }
+
 private:
     const Instance& instance;
     Semaphore work_semaphore;
@@ -926,6 +931,7 @@ private:
     RenderState render_state;
     bool is_rendering = false;
     // gow3: threaded recording
+    std::atomic<u32> recorder_tid{0};
     std::unique_ptr<RecordChunk> record_chunk;
     std::vector<std::unique_ptr<RecordChunk>> full_chunks;
     // gow3: SignalAfterHostCopies 与等待路径都可能触发 KickRecording，保护 chunk 移交。
