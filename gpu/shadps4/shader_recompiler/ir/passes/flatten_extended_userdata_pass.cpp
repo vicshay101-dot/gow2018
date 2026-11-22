@@ -727,7 +727,6 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     case IR::Opcode::ReadConst:
     case IR::Opcode::ReadConstBuffer:
     case IR::Opcode::ReadFirstLane:
-    case IR::Opcode::Phi:
     case IR::Opcode::IAdd32:
     case IR::Opcode::ISub32:
     case IR::Opcode::IMul32:
@@ -1029,7 +1028,8 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
             pending.emplace_back(src_off_dw, use);
         }
     }
-    while (!pending.empty()) {
+    const size_t max_iters = pending.size() + 1;
+    for (size_t iter = 0; !pending.empty() && iter < max_iters; ++iter) {
         bool progress = false;
         std::vector<std::pair<IR::Value, IR::Inst*>> next_pending;
         for (auto& [src_off_dw, use] : pending) {
@@ -1045,11 +1045,11 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
         }
         pending = std::move(next_pending);
         if (!progress) {
-            for (size_t i = 0; i < pending.size(); ++i) {
-                LogSrtError("Failed to compute offset for SRT walker", "");
-            }
             break;
         }
+    }
+    for (size_t i = 0; i < pending.size(); ++i) {
+        LogSrtError("Failed to compute offset for SRT walker", "");
     }
     for (const auto [src_off_dw, use] : *use_list) {
         if (pass_info.GetUsesAsPointer(use)) {
