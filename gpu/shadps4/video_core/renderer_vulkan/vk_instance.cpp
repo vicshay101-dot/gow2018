@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -550,8 +551,14 @@ bool Instance::CreateDevice() {
             .depthClipEnable = true,
         },
         vk::PhysicalDeviceRobustness2FeaturesEXT{
-            .robustBufferAccess2 = true,
-            .robustImageAccess2 = true,
+            .robustBufferAccess2 = [] {
+                const char* env = std::getenv("GOW3_ROBUSTNESS2");
+                return !(env && env[0] == '0');
+            }(),
+            .robustImageAccess2 = [] {
+                const char* env = std::getenv("GOW3_ROBUSTNESS2");
+                return !(env && env[0] == '0');
+            }(),
             .nullDescriptor = true,
         },
         vk::PhysicalDeviceVertexInputDynamicStateFeaturesEXT{

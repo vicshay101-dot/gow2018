@@ -903,4 +903,27 @@ void Runtime::FlushBarriers() {
     ++access_epoch;
 }
 
+void Runtime::DeduplicateSameLayoutImageBarriers() {
+    for (size_t i = 0; i < image_barriers.size(); ++i) {
+        auto& dst = image_barriers[i];
+        if (dst.oldLayout != dst.newLayout) {
+            continue;
+        }
+        for (size_t j = i + 1; j < image_barriers.size();) {
+            const auto& src = image_barriers[j];
+            if (src.image == dst.image && src.oldLayout == src.newLayout &&
+                src.oldLayout == dst.oldLayout &&
+                src.subresourceRange == dst.subresourceRange) {
+                dst.srcStageMask |= src.srcStageMask;
+                dst.srcAccessMask |= src.srcAccessMask;
+                dst.dstStageMask |= src.dstStageMask;
+                dst.dstAccessMask |= src.dstAccessMask;
+                image_barriers.erase(image_barriers.begin() + j);
+            } else {
+                ++j;
+            }
+        }
+    }
+}
+
 } // namespace Vulkan

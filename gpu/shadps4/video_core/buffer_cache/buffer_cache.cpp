@@ -465,7 +465,9 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         NoteHotUse(device_addr, size);
     }
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
-    if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
+    static const u64 stream_threshold =
+        std::getenv("GOW3_ANDROID_PORT") ? 64_KB : STREAM_THRESHOLD;
+    if (!is_written && size <= stream_threshold && !IsRegionGpuModified(device_addr, size)) {
         // If this small read-only buffer is already resident and clean in the GPU arena,
         // bind the arena directly to avoid thousands of redundant CPU memcpy calls per frame
         // without causing any upload or renderpass break.

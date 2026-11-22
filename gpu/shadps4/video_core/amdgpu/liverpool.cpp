@@ -217,6 +217,25 @@ void Liverpool::Process(std::stop_token stoken) {
 }
 
 namespace {
+bool IsGuestSyncOpcode(PM4ItOpcode opcode) noexcept {
+    switch (opcode) {
+    case PM4ItOpcode::AcquireMem:
+    case PM4ItOpcode::EventWrite:
+    case PM4ItOpcode::EventWriteEop:
+    case PM4ItOpcode::EventWriteEos:
+    case PM4ItOpcode::ReleaseMem:
+    case PM4ItOpcode::WaitRegMem:
+    case PM4ItOpcode::MemSemaphore:
+    case PM4ItOpcode::DmaData:
+    case PM4ItOpcode::WriteData:
+    case PM4ItOpcode::CopyData:
+    case PM4ItOpcode::PfpSyncMe:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /// gow3: packets the GPU command thread handles while the draw recording thread may still
 /// work on earlier draws (register state, draws it hands over, nested buffers). Every other
 /// packet first waits for that thread to run dry (Rasterizer::DrainDrawPipe).
@@ -848,6 +867,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 rasterizer->DrainDrawPipe(static_cast<u32>(opcode));
                 // They may write guest memory: not before fences deferred earlier.
                 rasterizer->WaitDeferredSignals();
+            }
+            if (rasterizer && IsGuestSyncOpcode(opcode)) {
+                rasterizer->NotifyGuestSync();
             }
             switch (opcode) {
             case PM4ItOpcode::Nop: {
@@ -1514,6 +1536,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         packet_predicated = false;
 
         const auto* it_body = reinterpret_cast<const u32*>(header) + 1;
+        if (rasterizer && IsGuestSyncOpcode(opcode)) {
+            rasterizer->NotifyGuestSync();
+        }
         switch (opcode) {
         case PM4ItOpcode::Nop: {
             const auto* nop = reinterpret_cast<const PM4CmdNop*>(header);

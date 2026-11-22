@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include "common/recursive_lock.h"
 #include "common/shared_first_mutex.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -38,6 +39,7 @@ class Runtime;
 /// is its only producer), so only the packet's predicate bit travels with the draw.
 struct DrawPredication {
     bool predicated{};
+    u64 sync_epoch{};
 };
 
 class Rasterizer {
@@ -45,6 +47,10 @@ public:
     explicit Rasterizer(const Instance& instance, Scheduler& scheduler, Runtime& runtime,
                         AmdGpu::Liverpool* liverpool);
     ~Rasterizer();
+
+    void NotifyGuestSync() noexcept {
+        guest_sync_epoch.fetch_add(1, std::memory_order_relaxed);
+    }
 
     [[nodiscard]] Runtime& GetRuntime() noexcept {
         return runtime;
@@ -536,6 +542,9 @@ private:
     /// Submissions (prepared draws) kept alive until stage B reaches the position.
     std::deque<std::pair<u64, std::shared_ptr<const void>>> pipe_keepalive;
     std::unique_ptr<DrawPipe> draw_pipe;
+    std::atomic<u64> guest_sync_epoch{1};
+    u64 last_compute_hash{0};
+    u64 last_compute_sync_epoch{0};
 };
 
 } // namespace Vulkan

@@ -971,6 +971,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
 
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                             bool is_indexed, u32 index_offset, const DrawPredication& pred) {
+    last_compute_hash = 0;
     if (DrawPipe::OnStageB()) {
         FrameCapture::Poll();
         scheduler.PopPendingOperations();
@@ -1228,6 +1229,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
 
 void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_indexed,
                                     const IndirectDraw& indirect, const DrawPredication& pred) {
+    last_compute_hash = 0;
     if (DrawPipe::OnStageB()) {
         FrameCapture::Poll();
         scheduler.PopPendingOperations();
@@ -1338,7 +1340,10 @@ void Rasterizer::DispatchDirect() {
     if (!pipeline) {
         return;
     }
-    const DrawPredication pred{.predicated = liverpool->IsPacketPredicated()};
+    const DrawPredication pred{
+        .predicated = liverpool->IsPacketPredicated(),
+        .sync_epoch = guest_sync_epoch.load(std::memory_order_relaxed),
+    };
     if (pipelined) {
         PostDraw(pipeline, nullptr, false, 0, pred, &CsRegs());
         return;
@@ -1368,6 +1373,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline, const DrawPredi
         upscaler->OnDispatch(cs.pgm_hash);
     }
     if (ExecuteShaderHLE(cs, Regs(), cs_program, *this)) {
+        last_compute_hash = 0;
         return;
     }
 
@@ -1375,9 +1381,25 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline, const DrawPredi
         return;
     }
 
+    static const bool coalesce_compute_barriers = [] {
+        if (const char* env = std::getenv("GOW3_COALESCE_COMPUTE_BARRIERS")) {
+            return env[0] == '1';
+        }
+        return std::getenv("GOW3_ANDROID_PORT") != nullptr;
+    }();
+    const bool same_unsynced_batch =
+        coalesce_compute_barriers && cs.pgm_hash != 0 &&
+        cs.pgm_hash == last_compute_hash && pred.sync_epoch != 0 &&
+        pred.sync_epoch == last_compute_sync_epoch && !runtime.HasImageLayoutTransition();
     if (needs_barrier) {
-        runtime.FlushBarriers();
+        if (same_unsynced_batch) {
+            runtime.DeduplicateSameLayoutImageBarriers();
+        } else {
+            runtime.FlushBarriers();
+        }
     }
+    last_compute_hash = cs.pgm_hash;
+    last_compute_sync_epoch = pred.sync_epoch;
 
     scheduler.EndRendering();
     mark();
@@ -1423,6 +1445,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
 void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr address, u32 size,
                                         const DrawPredication& pred) {
+    last_compute_hash = 0;
     scheduler.PopPendingOperations();
     const u32 offset = 0;
 
@@ -1471,6 +1494,7 @@ void Rasterizer::Finish() {
 
 void Rasterizer::OnSubmit() {
     DrainDrawPipe();
+    last_compute_hash = 0;
     if (fault_process_pending) {
         fault_process_pending = false;
         buffer_cache.ProcessFaultBuffer();
@@ -1935,8 +1959,10 @@ void Rasterizer::ResetBindings(bool is_compute) {
         texture_cache.GetImage(image_id).binding = {};
     }
     for (const auto [buffer, offset, size, is_written] : bound_buffers) {
-        const auto dst_stage = is_compute ? vk::PipelineStageFlagBits2::eComputeShader
-                                          : vk::PipelineStageFlagBits2::eAllGraphics;
+        const auto dst_stage =
+            is_compute ? vk::PipelineStageFlags2{vk::PipelineStageFlagBits2::eComputeShader}
+                       : (vk::PipelineStageFlagBits2::ePreRasterizationShaders |
+                          vk::PipelineStageFlagBits2::eFragmentShader);
         const auto write_flag =
             is_written ? vk::AccessFlagBits2::eShaderWrite : vk::AccessFlagBits2::eNone;
         runtime.AccessBuffer(buffer, offset, size, dst_stage,
@@ -2974,10 +3000,13 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         ASSERT(desc.view_info.range.extent.levels == 1 && !image.binding.needs_rebind);
 
         const bool has_stencil = image.info.props.has_stencil;
-        // Stencil writes can be enabled while depth writes are off.
+        // Only transition depth to ReadOnly layouts when the depth image is simultaneously bound
+        // as a shader resource (attachment feedback). Keeping AttachmentOptimal across draws that
+        // toggle depth/stencil writes avoids breaking the G-buffer render pass on TBDR GPUs.
+        const bool keep_rw_layout = desc.view_info.is_storage || !image.binding.is_bound;
         const bool stencil_write =
-            has_stencil && regs.depth_control.stencil_enable && !desc.view_info.is_storage;
-        const auto new_layout = desc.view_info.is_storage
+            has_stencil && regs.depth_control.stencil_enable && !keep_rw_layout;
+        const auto new_layout = keep_rw_layout
                                     ? has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
                                                   : vk::ImageLayout::eDepthAttachmentOptimal
                                 : stencil_write

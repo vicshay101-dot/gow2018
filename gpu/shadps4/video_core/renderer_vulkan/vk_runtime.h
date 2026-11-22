@@ -99,6 +99,19 @@ public:
 
     void FlushBarriers();
 
+    /// Returns true if any queued image barrier performs an actual layout transition.
+    [[nodiscard]] bool HasImageLayoutTransition() const noexcept {
+        for (const auto& barrier : image_barriers) {
+            if (barrier.oldLayout != barrier.newLayout) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Merges duplicate same-layout image barriers so deferred barriers stay bounded.
+    void DeduplicateSameLayoutImageBarriers();
+
     /// gow3: runs before this thread changes image state (layouts, pending image
     /// barriers): the rasterizer joins its texture binding helper there (BindHelper).
     void SetImageAccessHook(void (*hook)(void*), void* context) {
