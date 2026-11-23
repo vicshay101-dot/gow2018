@@ -952,6 +952,8 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
             p.insert(p.end(), {OpFlat, offset});
             return true;
         }
+        // gow3: the dependency is not flattened (yet): name it so the log shows the cause.
+        LogSrtError("Offset depends on unflattened", magic_enum::enum_name(inst->GetOpcode()));
         return false;
     case IR::Opcode::IAdd32: return EmitComputeOffsetOp(p, pass_info, inst, OpAdd, 2);
     case IR::Opcode::ISub32: return EmitComputeOffsetOp(p, pass_info, inst, OpSub, 2);
