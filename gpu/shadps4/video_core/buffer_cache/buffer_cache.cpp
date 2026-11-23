@@ -209,6 +209,56 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
                 memory_tracker->MarkRegionAsCpuModified(device_addr, size);
                 return;
             }
+            static const u32 write_sync_mode = [] {
+                if (const char* env = std::getenv("GOW3_WRITE_FAULT_SYNC")) {
+                    return static_cast<u32>(std::strtoul(env, nullptr, 10));
+                }
+                return std::getenv("GOW3_ANDROID_PORT") ? 0u : 2u;
+            }();
+            if (write_sync_mode == 0u) {
+                gpu_modified_ranges.Subtract(page_start, page_size);
+                for (auto& entry : pending_async_downloads) {
+                    if (entry.window_start < page_end && page_start < entry.window_end) {
+                        decltype(entry.copies) clipped;
+                        for (const auto& copy : entry.copies) {
+                            const VAddr copy_start = entry.arena_base + copy.srcOffset;
+                            const VAddr copy_end = copy_start + copy.size;
+                            if (copy_end <= page_start || copy_start >= page_end) {
+                                clipped.push_back(copy);
+                            } else {
+                                if (copy_start < page_start) {
+                                    auto left = copy;
+                                    left.size = page_start - copy_start;
+                                    clipped.push_back(left);
+                                }
+                                if (copy_end > page_end) {
+                                    auto right = copy;
+                                    const u64 skip = page_end - copy_start;
+                                    right.srcOffset += skip;
+                                    right.dstOffset += skip;
+                                    right.size = copy_end - page_end;
+                                    clipped.push_back(right);
+                                }
+                            }
+                        }
+                        entry.copies = std::move(clipped);
+                    }
+                }
+                static u64 skipped_write_syncs = 0;
+                if ((++skipped_write_syncs & 255u) == 1u) {
+                    std::printf("GOW3_WRITE_FAULT_SYNC: mode=0 skipped=%llu addr=%#llx\n",
+                                static_cast<unsigned long long>(skipped_write_syncs),
+                                static_cast<unsigned long long>(page_start));
+                }
+                memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
+                memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+                return;
+            }
+            if (write_sync_mode == 1u) {
+                DownloadMemory(arena, page_start, page_size);
+                memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+                return;
+            }
             constexpr u64 WriteWindow = 1_MB;
             const VAddr win_start =
                 std::max<VAddr>(Common::AlignDown(device_addr, WriteWindow), arena->cpu_addr);
@@ -366,7 +416,14 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     u64 pending_tick = 0;
     for (const auto& entry : pending_async_downloads) {
         if (entry.window_start < window_end && device_addr < entry.window_end) {
-            pending_tick = std::max(pending_tick, entry.tick);
+            for (const auto& copy : entry.copies) {
+                const VAddr copy_start = entry.arena_base + copy.srcOffset;
+                const VAddr copy_end = copy_start + copy.size;
+                if (copy_start < window_end && device_addr < copy_end) {
+                    pending_tick = std::max(pending_tick, entry.tick);
+                    break;
+                }
+            }
         }
     }
 
