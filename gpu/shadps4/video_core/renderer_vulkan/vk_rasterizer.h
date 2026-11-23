@@ -542,6 +542,8 @@ private:
     /// Submissions (prepared draws) kept alive until stage B reaches the position.
     std::deque<std::pair<u64, std::shared_ptr<const void>>> pipe_keepalive;
     std::unique_ptr<DrawPipe> draw_pipe;
+    void SubmitIfWorkPiledUp(const RenderState& next_state);
+    u64 work_submits{0};
     std::atomic<u64> guest_sync_epoch{1};
     u64 last_compute_hash{0};
     u64 last_compute_sync_epoch{0};

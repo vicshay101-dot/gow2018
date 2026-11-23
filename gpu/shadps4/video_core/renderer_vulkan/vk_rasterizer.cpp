@@ -1278,6 +1278,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     MarkPass(pipeline, state);
     const auto zpass_query = predication.PrepareDrawQuery();
     const auto predicate_state = predication.CapturePredicate();
+    SubmitIfWorkPiledUp(state);
+    scheduler.CountWork();
     scheduler.BeginRendering(state);
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
@@ -1438,6 +1440,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     MarkPass(pipeline, state);
     const auto zpass_query = predication.PrepareDrawQuery();
     const auto predicate_state = predication.CapturePredicate();
+    SubmitIfWorkPiledUp(state);
+    scheduler.CountWork();
     scheduler.BeginRendering(state);
 
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)
@@ -1572,9 +1576,29 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline, const DrawPredi
         predication.EndDraw(cmdbuf, std::nullopt, pred.predicated, predicate_state);
     });
     DebugState.IncDispatch();
+    scheduler.CountWork();
 
     ResetBindings(true);
     scheduler.KickRecording();
+}
+
+void Rasterizer::SubmitIfWorkPiledUp(const RenderState& next_state) {
+    static const u32 limit = [] {
+        const char* env = std::getenv("GOW3_SUBMIT_DRAWS");
+        return env && *env ? static_cast<u32>(std::strtoul(env, nullptr, 10)) : 1024u;
+    }();
+    if (limit == 0 || scheduler.WorkSinceSubmit() < limit ||
+        !scheduler.WillBeginRendering(next_state)) {
+        return;
+    }
+    if (FrameCapture::Active()) {
+        return;
+    }
+    if ((++work_submits & 255) == 1) {
+        std::printf("GPU: %llu submissions of piled-up draws so far (GOW3_SUBMIT_DRAWS=%u)\n",
+                    static_cast<unsigned long long>(work_submits), limit);
+    }
+    scheduler.Flush();
 }
 
 void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {

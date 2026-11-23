@@ -832,6 +832,14 @@ public:
         return !(is_rendering && render_state == state);
     }
 
+    /// Count draws/dispatches recorded since the last submission (for GOW3_SUBMIT_DRAWS).
+    void CountWork() {
+        work_since_submit.fetch_add(1, std::memory_order_relaxed);
+    }
+    [[nodiscard]] u32 WorkSinceSubmit() const {
+        return work_since_submit.load(std::memory_order_relaxed);
+    }
+
     /// CommandBuffer() calls that waited for a recording thread (GOW3_FRAME_STATS).
     static inline std::atomic<u64> direct_recordings{0};
 
@@ -954,6 +962,7 @@ private:
     // compares thread ids, which on Windows (libc++ over winpthreads) costs two system calls.
     bool recording_threaded{false};
     std::jthread recorder_thread;
+    std::atomic<u32> work_since_submit{0};
     tracy::VkCtxScope* profiler_scope{};
 };
 

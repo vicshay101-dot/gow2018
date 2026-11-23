@@ -418,6 +418,7 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
     std::scoped_lock lk{submit_mutex};
+    work_since_submit.store(0, std::memory_order_relaxed);
     const u64 signal_value = work_semaphore.NextTick();
 
     // BACHATA ARM64's bounded timeline policy: do not issue
