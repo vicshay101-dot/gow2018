@@ -216,6 +216,23 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
                 return std::getenv("GOW3_ANDROID_PORT") ? 0u : 2u;
             }();
             if (write_sync_mode == 0u) {
+                constexpr u64 HotWindow = 1_MB;
+                const VAddr win_start =
+                    std::max<VAddr>(Common::AlignDown(device_addr, HotWindow), arena->cpu_addr);
+                const VAddr win_end = std::min<VAddr>(
+                    std::max<VAddr>(win_start + HotWindow, page_end), arena_end);
+                bool known_hot = false;
+                for (const auto& [ws, we] : hot_readback_windows) {
+                    if (ws == win_start && we == win_end) {
+                        known_hot = true;
+                        break;
+                    }
+                }
+                if (!known_hot) {
+                    DownloadMemory(arena, win_start, win_end - win_start);
+                    memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+                    return;
+                }
                 gpu_modified_ranges.Subtract(page_start, page_size);
                 for (auto& entry : pending_async_downloads) {
                     if (entry.window_start < page_end && page_start < entry.window_end) {
