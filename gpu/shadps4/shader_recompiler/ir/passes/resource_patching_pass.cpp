@@ -894,11 +894,28 @@ void PatchImageArgs(IR::Inst& inst, Info& info) {
             }
             return {ir.CompositeConstruct(body->Arg(0), body->Arg(1)), body->Arg(skip_lod ? 3 : 2)};
         }
-        case AmdGpu::ImageType::Color2DArray:     // x, y, slice, [lod]
+        case AmdGpu::ImageType::Color2DArray: // x, y, slice, [lod]
+        case AmdGpu::ImageType::Color3D:      // x, y, z, [lod]
+            return {ir.CompositeConstruct(body->Arg(0), body->Arg(1), body->Arg(2)), body->Arg(3)};
         case AmdGpu::ImageType::Color2DMsaaArray: // x, y, slice. (sample is passed on different
                                                   // argument)
-        case AmdGpu::ImageType::Color3D:          // x, y, z, [lod]
-            return {ir.CompositeConstruct(body->Arg(0), body->Arg(1), body->Arg(2)), body->Arg(3)};
+        {
+            auto skip_lod = false;
+            if (inst_info.has_lod) {
+                const auto mipid = body->Arg(3);
+                if (mipid.IsImmediate() && mipid.U32() == 0) {
+                    LOG_WARNING(Render_Recompiler, "Encountered a _mip instruction with MSAA array "
+                                                   "image, and mipid is 0, skipping LoD");
+                    inst_info.has_lod.Assign(false);
+                    skip_lod = true;
+                } else {
+                    UNREACHABLE_MSG(
+                        "Encountered a _mip instruction with MSAA array image, and mipid is non-zero");
+                }
+            }
+            return {ir.CompositeConstruct(body->Arg(0), body->Arg(1), body->Arg(2)),
+                    body->Arg(skip_lod ? 4 : 3)};
+        }
         default:
             UNREACHABLE_MSG("Unknown image type {}", view_type);
         }
