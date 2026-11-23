@@ -137,19 +137,19 @@ bool ShouldSkipShadowAtlas(VideoCore::TextureCache& texture_cache,
     }
     const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
     static VAddr last_shadow_addr = 0;
-    static u64 last_render_frame = ~0ULL;
+    static u64 last_3d_frame = ~0ULL;
     static u64 skipped_draws = 0;
     if (depth.info.guest_address != last_shadow_addr) {
         last_shadow_addr = depth.info.guest_address;
-        last_render_frame = frame;
+        last_3d_frame = frame;
         return false;
     }
-    if (last_render_frame == ~0ULL || frame == last_render_frame) {
-        last_render_frame = frame;
+    if (last_3d_frame == ~0ULL || frame == last_3d_frame) {
+        last_3d_frame = frame;
         return false;
     }
-    if (rate > 0u && (frame - last_render_frame) >= rate) {
-        last_render_frame = frame;
+    if (rate > 0u && (frame - last_3d_frame) >= rate) {
+        last_3d_frame = frame;
         return false;
     }
     if ((++skipped_draws & 4095u) == 1u) {
@@ -186,7 +186,7 @@ bool ShouldSkipVolumetricFog(u64 pgm_hash) {
             last_3d_frame = frame;
             return false;
         }
-        if (vol3d_rate > 0u && frame > last_render_frame && (frame - last_render_frame) >= vol3d_rate) {
+        if (vol3d_rate > 0u && frame > last_3d_frame && (frame - last_3d_frame) >= vol3d_rate) {
             last_3d_frame = frame;
             return false;
         }
@@ -205,25 +205,25 @@ bool ShouldSkipVolumetricFog(u64 pgm_hash) {
         return false;
     }
     const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
-    static u64 last_render_frame = ~0ULL;
+    static u64 last_3d_frame = ~0ULL;
     static u32 warmup_frames = 0;
     static u64 skipped_dispatches = 0;
-    if (last_render_frame == ~0ULL || frame == last_render_frame) {
-        if (last_render_frame == ~0ULL) {
+    if (last_3d_frame == ~0ULL || frame == last_3d_frame) {
+        if (last_3d_frame == ~0ULL) {
             warmup_frames = 1u;
         }
-        last_render_frame = frame;
+        last_3d_frame = frame;
         return false;
     }
-    if (warmup_frames < 2u || (frame > last_render_frame && (frame - last_render_frame) > 30u)) {
-        warmup_frames = (frame > last_render_frame && (frame - last_render_frame) > 30u)
+    if (warmup_frames < 2u || (frame > last_3d_frame && (frame - last_3d_frame) > 30u)) {
+        warmup_frames = (frame > last_3d_frame && (frame - last_3d_frame) > 30u)
                             ? 1u
                             : (warmup_frames + 1u);
-        last_render_frame = frame;
+        last_3d_frame = frame;
         return false;
     }
-    if (rate > 0u && frame > last_render_frame && (frame - last_render_frame) >= rate) {
-        last_render_frame = frame;
+    if (rate > 0u && frame > last_3d_frame && (frame - last_3d_frame) >= rate) {
+        last_3d_frame = frame;
         return false;
     }
     if ((++skipped_dispatches & 4095u) == 1u) {
