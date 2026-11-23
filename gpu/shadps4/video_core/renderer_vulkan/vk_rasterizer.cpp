@@ -160,6 +160,47 @@ bool ShouldSkipShadowAtlas(VideoCore::TextureCache& texture_cache,
     return true;
 }
 
+bool ShouldSkipVolumetricFog(u64 pgm_hash) {
+    if (pgm_hash != 0x64e9edc8ULL && pgm_hash != 0x2a4c6f28ULL && pgm_hash != 0x833d761bULL) {
+        return false;
+    }
+    static const u32 rate = [] {
+        if (const char* env = std::getenv("GOW3_VOLFOG_RATE")) {
+            return static_cast<u32>(std::strtoul(env, nullptr, 10));
+        }
+        return std::getenv("GOW3_ANDROID_PORT") ? 3u : 1u;
+    }();
+    if (rate == 1u) {
+        return false;
+    }
+    const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
+    static u64 last_render_frame = ~0ULL;
+    static u32 warmup_frames = 0;
+    static u64 skipped_dispatches = 0;
+    if (last_render_frame == ~0ULL || frame == last_render_frame) {
+        if (last_render_frame == ~0ULL) {
+            warmup_frames = 1u;
+        }
+        last_render_frame = frame;
+        return false;
+    }
+    if (warmup_frames < 2u || (frame > last_render_frame && (frame - last_render_frame) > 30u)) {
+        warmup_frames = (frame > last_render_frame && (frame - last_render_frame) > 30u)
+                            ? 1u
+                            : (warmup_frames + 1u);
+        last_render_frame = frame;
+        return false;
+    }
+    if (rate > 0u && frame > last_render_frame && (frame - last_render_frame) >= rate) {
+        last_render_frame = frame;
+        return false;
+    }
+    if ((++skipped_dispatches & 4095u) == 1u) {
+        std::printf("GOW3_VOLFOG_THROTTLE: rate=%u skipped=%llu\n", rate,
+                    static_cast<unsigned long long>(skipped_dispatches));
+    }
+    return true;
+}
 } // namespace
 
 bool Rasterizer::FilterDraw() {
@@ -1454,6 +1495,10 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline, const DrawPredi
         return;
     }
 
+    if (ShouldSkipVolumetricFog(cs.pgm_hash)) {
+        last_compute_hash = 0;
+        return;
+    }
     if (!BindResources(pipeline)) {
         return;
     }
