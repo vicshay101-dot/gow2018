@@ -966,6 +966,8 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
     case IR::Opcode::UMax32: return EmitComputeOffsetOp(p, pass_info, inst, OpUMax, 2);
     case IR::Opcode::BitFieldUExtract:
         return EmitComputeOffsetOp(p, pass_info, inst, OpBitFieldUExtract, 3);
+    case IR::Opcode::FindILsb32:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpFindILsb, 1);
     case IR::Opcode::Phi: {
         // gow3: loop/branch merges cannot be walked statically. Take the first operand that can
         // be computed (the value entering the loop); the loop-carried operand loops back here

@@ -9,7 +9,7 @@ namespace Shader::Arm64Srt {
 enum SrtOp : std::uint32_t {
     OpEnd, OpPushImm, OpPushDyn, OpPop, OpCopyImm, OpCopyDyn, OpUserData, OpFlat,
     OpImm, OpAdd, OpSub, OpMul, OpShl, OpShr, OpAnd, OpOr, OpXor, OpNot,
-    OpUMin, OpUMax, OpBitFieldUExtract,
+    OpUMin, OpUMax, OpBitFieldUExtract, OpFindILsb,
 };
 constexpr std::uint32_t OpZeroed = 0x80000000u, SrtMagic = 0x42545253u;
 constexpr std::uint32_t MaxDepth = 64, MaxValues = 32;
@@ -83,6 +83,14 @@ inline std::vector<std::uint32_t> Compile(std::span<const std::uint32_t> program
         } else if (op == OpNot) {
             if (!count) return {};
             load(3, count - 1); emit(0x2a2303e3u); store(3, count - 1);
+        } else if (op == OpFindILsb) {
+            if (!count) return {};
+            load(3, count - 1);
+            emit(0x7100007fu); // cmp w3, #0
+            emit(0x5ac00063u); // rbit w3, w3
+            emit(0x5ac01063u); // clz w3, w3
+            emit(0x5a9f1063u); // csinv w3, w3, wzr, ne
+            store(3, count - 1);
         } else if (op == OpBitFieldUExtract) {
             if (count < 3) return {};
             load(5, --count); load(4, --count); load(3, count - 1);
