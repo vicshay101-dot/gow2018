@@ -940,6 +940,8 @@ static bool EmitComputeOffsetOp(SrtProgram& p, PassInfo& pass_info, IR::Inst* in
     return true;
 }
 
+static thread_local bool g_suppress_unflattened_log = false;
+
 static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& off_dw) {
     auto inst = off_dw.Inst();
     switch (inst->GetOpcode()) {
@@ -952,8 +954,10 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
             p.insert(p.end(), {OpFlat, offset});
             return true;
         }
-        // gow3: the dependency is not flattened (yet): name it so the log shows the cause.
-        LogSrtError("Offset depends on unflattened", magic_enum::enum_name(inst->GetOpcode()));
+        if (!g_suppress_unflattened_log) {
+            // gow3: the dependency is not flattened (yet): name it so the log shows the cause.
+            LogSrtError("Offset depends on unflattened", magic_enum::enum_name(inst->GetOpcode()));
+        }
         return false;
     case IR::Opcode::IAdd32: return EmitComputeOffsetOp(p, pass_info, inst, OpAdd, 2);
     case IR::Opcode::ISub32: return EmitComputeOffsetOp(p, pass_info, inst, OpSub, 2);
@@ -1016,19 +1020,42 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
     }
     auto* use_list = pass_info.GetUsesAsPointer(subtree);
     ASSERT(use_list);
+    std::vector<std::pair<IR::Value, IR::Inst*>> pending;
     for (auto [src_off_dw, use] : *use_list) {
         if (src_off_dw.IsImmediate()) {
             p.insert(p.end(), {OpCopyImm, src_off_dw.U32(), pass_info.dst_off_dw});
+            SetFlatbufOffset(use, pass_info.dst_off_dw++);
         } else {
-            SrtProgram offset;
-            if (!ComputeOffset(offset, pass_info, src_off_dw)) {
-                LogSrtError("Failed to compute offset for SRT walker", "");
-                continue;
-            }
-            p.insert(p.end(), offset.begin(), offset.end());
-            p.insert(p.end(), {OpCopyDyn, pass_info.dst_off_dw});
+            pending.emplace_back(src_off_dw, use);
         }
-        SetFlatbufOffset(use, pass_info.dst_off_dw++);
+    }
+    const bool prev_suppress = g_suppress_unflattened_log;
+    g_suppress_unflattened_log = true;
+    while (!pending.empty()) {
+        std::vector<std::pair<IR::Value, IR::Inst*>> next_pending;
+        next_pending.reserve(pending.size());
+        bool progress = false;
+        for (const auto& [src_off_dw, use] : pending) {
+            SrtProgram offset;
+            if (ComputeOffset(offset, pass_info, src_off_dw)) {
+                p.insert(p.end(), offset.begin(), offset.end());
+                p.insert(p.end(), {OpCopyDyn, pass_info.dst_off_dw});
+                SetFlatbufOffset(use, pass_info.dst_off_dw++);
+                progress = true;
+            } else {
+                next_pending.emplace_back(src_off_dw, use);
+            }
+        }
+        pending = std::move(next_pending);
+        if (!progress) {
+            break;
+        }
+    }
+    g_suppress_unflattened_log = prev_suppress;
+    for (const auto& [src_off_dw, use] : pending) {
+        SrtProgram offset;
+        (void)ComputeOffset(offset, pass_info, src_off_dw);
+        LogSrtError("Failed to compute offset for SRT walker", "");
     }
     for (const auto [src_off_dw, use] : *use_list) {
         if (pass_info.GetUsesAsPointer(use)) {
