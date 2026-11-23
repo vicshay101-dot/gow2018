@@ -24,7 +24,7 @@ class ReadbackAffinityTests(unittest.TestCase):
         texture_cache = (ROOT / "gpu/shadps4/video_core/texture_cache/texture_cache.cpp").read_text()
         self.assertIn("work_semaphore.Wait(tick);", scheduler)
         self.assertIn("scheduler.Wait(copy_tick);", buffer_cache)
-        self.assertIn("scheduler.Finish();", texture_cache)
+        self.assertIn("pending_readbacks", texture_cache)
         self.assertIn("ResolveReadbacks(", texture_cache)
         self.assertIn("has_pending_readbacks.store(true", texture_cache)
         self.assertIn("pending_readbacks.Push(", texture_cache)
