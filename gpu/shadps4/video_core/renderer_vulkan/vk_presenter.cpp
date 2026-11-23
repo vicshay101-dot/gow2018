@@ -156,7 +156,9 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     // Android uses direct guest-resolution patches and never selects a
     // reconstruction pass. Avoid compiling two unused compute pipelines,
     // creating descriptors and reserving intermediary render targets.
-    if (!std::getenv("GOW3_ANDROID_PORT")) {
+    const char* fsr1_env = std::getenv("GOW3_FSR1");
+    const bool allow_fsr1 = !std::getenv("GOW3_ANDROID_PORT") || (fsr1_env && fsr1_env[0] == '1');
+    if (allow_fsr1) {
         fsr_pass.Create(device, instance.GetAllocator(), num_images);
     }
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
@@ -487,8 +489,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // gow3: FSR 1, RCAS and its strength come from the in-game menu, every frame.
     const auto& graphics = Gow3Settings::Get();
     const bool native_android = std::getenv("GOW3_ANDROID_PORT") != nullptr;
-    fsr_settings.enable = !native_android && graphics.fsr1;
-    fsr_settings.use_rcas = !native_android && graphics.rcas;
+    const char* fsr1_env = std::getenv("GOW3_FSR1");
+    const char* rcas_env = std::getenv("GOW3_RCAS");
+    const bool env_fsr1 = fsr1_env && fsr1_env[0] == '1';
+    const bool allow_fsr1 = !native_android || env_fsr1;
+    fsr_settings.enable = allow_fsr1 && (graphics.fsr1 || env_fsr1);
+    fsr_settings.use_rcas = allow_fsr1 && (graphics.rcas || (env_fsr1 && !(rcas_env && rcas_env[0] == '0')));
     fsr_settings.rcas_attenuation = Gow3Graphics::RcasAttenuation(graphics.rcas_strength);
     Gow3Settings::Get().image_width = int(image_size.width);
     Gow3Settings::Get().image_height = int(image_size.height);
@@ -498,9 +504,14 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         fsr_settings.use_rcas &&
         Gow3Graphics::FsrPassRuns(fsr_settings.enable, true, int(image_size.width), int(image_size.height),
                                   int(frame->width), int(frame->height));
-    // The pass is not created on Android. Never dispatch or touch its
-    // uninitialized descriptor/pipeline resources on that presentation path.
-    if (!native_android) {
+    if (allow_fsr1) {
+        static bool fsr_logged = false;
+        if (fsr_settings.enable && !fsr_logged && image_size.width < frame->width) {
+            fsr_logged = true;
+            std::printf("GOW3_FSR1_STATUS: active input=%ux%u output=%ux%u rcas=%d\n",
+                        image_size.width, image_size.height, frame->width, frame->height,
+                        int(fsr_settings.use_rcas));
+        }
         image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
                                      fsr_settings, frame->is_hdr);
     }

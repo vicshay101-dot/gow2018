@@ -161,6 +161,37 @@ bool ShouldSkipShadowAtlas(VideoCore::TextureCache& texture_cache,
 }
 
 bool ShouldSkipVolumetricFog(u64 pgm_hash) {
+    if (pgm_hash == 0x69045f31ULL) {
+        static const u32 vol3d_rate = [] {
+            if (const char* env = std::getenv("GOW3_VOL3D_RATE")) {
+                return static_cast<u32>(std::strtoul(env, nullptr, 10));
+            }
+            return std::getenv("GOW3_ANDROID_PORT") ? 3u : 1u;
+        }();
+        if (vol3d_rate == 1u) {
+            return false;
+        }
+        const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
+        static u64 last_3d_frame = ~0ULL;
+        static u32 warmup_3d = 0;
+        if (last_3d_frame == ~0ULL || frame == last_3d_frame) {
+            if (last_3d_frame == ~0ULL) {
+                warmup_3d = 1u;
+            }
+            last_3d_frame = frame;
+            return false;
+        }
+        if (warmup_3d < 2u || (frame > last_3d_frame && (frame - last_3d_frame) > 30u)) {
+            warmup_3d = (frame > last_3d_frame && (frame - last_3d_frame) > 30u) ? 1u : (warmup_3d + 1u);
+            last_3d_frame = frame;
+            return false;
+        }
+        if (vol3d_rate > 0u && frame > last_render_frame && (frame - last_render_frame) >= vol3d_rate) {
+            last_3d_frame = frame;
+            return false;
+        }
+        return true;
+    }
     if (pgm_hash != 0x64e9edc8ULL && pgm_hash != 0x2a4c6f28ULL && pgm_hash != 0x833d761bULL) {
         return false;
     }

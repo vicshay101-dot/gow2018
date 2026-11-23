@@ -34,10 +34,10 @@ class AndroidFirstRunAndPerfTests(unittest.TestCase):
 
     def test_guest_direct_output_skips_unused_compute_pipelines(self):
         presenter = (ROOT / "gpu/shadps4/video_core/renderer_vulkan/vk_presenter.cpp").read_text()
-        self.assertIn('if (!std::getenv("GOW3_ANDROID_PORT")) {\n        fsr_pass.Create', presenter)
-        self.assertIn('if (!native_android) {\n        image_view = fsr_pass.Render', presenter)
-        self.assertIn('!native_android && graphics.fsr1', presenter)
-        self.assertIn('!native_android && graphics.rcas', presenter)
+        self.assertIn('const bool allow_fsr1 = !std::getenv("GOW3_ANDROID_PORT") || (fsr1_env && fsr1_env[0] == \'1\');\n    if (allow_fsr1) {\n        fsr_pass.Create', presenter)
+        self.assertIn('if (allow_fsr1) {', presenter)
+        self.assertIn('allow_fsr1 && (graphics.fsr1 || env_fsr1)', presenter)
+        self.assertIn('fsr_settings.use_rcas = allow_fsr1 &&', presenter)
 
     def test_readback_and_affinity_cannot_be_disabled_unsafely(self):
         cache = (ROOT / "gpu/shadps4/video_core/texture_cache/texture_cache.cpp").read_text()
