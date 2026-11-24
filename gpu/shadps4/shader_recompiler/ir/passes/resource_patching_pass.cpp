@@ -205,10 +205,10 @@ SharpFetch<T> ConstructSharpFetch(const SharpReference& sharp) {
 // its operands produce the same signature, so the value does not depend on which path runs.
 static bool RecipeSig(const IR::Value& value, int depth, std::string& sig, std::string& unsupported) {
     if (value.IsImmediate()) {
-        if (value.type == IR::Type::U32) {
+        if (value.Type() == IR::Type::U32) {
             sig += "u" + std::to_string(value.U32());
         } else {
-            sig += "i" + std::to_string(static_cast<int>(value.type));
+            sig += "i" + std::to_string(static_cast<int>(value.Type()));
         }
         return true;
     }
