@@ -735,7 +735,11 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
         runtime.CopyColorAndDepth(&cache_image, &new_image);
         new_image.alias_generation = cache_image.alias_generation;
 
+        const bool has_color_writer =
+            binding == BindingType::Storage || binding == BindingType::RenderTarget ||
+            cache_image.usage.storage || cache_image.usage.render_target;
         const bool keep_paired_sibling =
+            has_color_writer &&
             cache_image.info.guest_address == requested_info.guest_address &&
             cache_image.info.size == requested_info.size && bpp_match &&
             cache_image.info.num_samples == 1 && requested_info.num_samples == 1 &&

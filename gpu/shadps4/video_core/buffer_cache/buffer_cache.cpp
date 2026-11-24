@@ -218,7 +218,7 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
             if (write_sync_mode == 0u) {
                 static const bool protect_srt_arena = [] {
                     const char* env = std::getenv("GOW3_WRITE_FAULT_SYNC_PROTECT_SRT");
-                    return !env || env[0] != '0';
+                    return env && env[0] == '1';
                 }();
                 if (protect_srt_arena && page_start >= 0x1058000000ULL &&
                     page_start < 0x1059000000ULL) {
