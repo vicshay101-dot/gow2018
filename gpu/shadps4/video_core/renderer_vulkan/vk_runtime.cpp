@@ -455,7 +455,11 @@ void Runtime::CopyImageWithBuffer(VideoCore::Image* src, VideoCore::Image* dst,
             .imageOffset = {0, 0, 0},
             .imageExtent = {mip_w, mip_h, mip_d},
         };
-        const auto copy_size = BufferImageCopySize(copy, src->info.pixel_format);
+        const vk::Format copy_fmt =
+            (src->info.pixel_format == vk::Format::eD32SfloatS8Uint)
+                ? vk::Format::eR32Sfloat
+                : src->info.pixel_format;
+        const auto copy_size = BufferImageCopySize(copy, copy_fmt);
         download_copies.push_back(copy);
         copy.imageSubresource.aspectMask = dst->aspect_mask & ~vk::ImageAspectFlagBits::eStencil;
         upload_copies.push_back(copy);
@@ -559,12 +563,18 @@ void Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
         } else {
             // Perform depth from/to color copy using an appropriately sized intermediate buffer
             // (safer across Adreno/Turnip UBWC depth/color layouts than direct CopyImage).
-            const size_t min_bytes = std::max<size_t>(
-                src->info.guest_size * 2ULL,
-                static_cast<size_t>(src->info.size.width) * src->info.size.height *
-                    std::max<u32>(src->info.num_bits / 8u, 1u) *
-                    std::max<u32>(src->info.resources.layers, 1u) * 2ULL);
-            const size_t copy_buf_size = std::clamp<size_t>(min_bytes, 1_MB, 128_MB);
+            const u32 num_mips = std::min(src->info.resources.levels, dst->info.resources.levels);
+            const u32 num_layers = std::min(src->info.resources.layers, dst->info.resources.layers);
+            const size_t bpp = std::max<size_t>(src->info.num_bits / 8u, 1u);
+            size_t total_bytes = 0;
+            for (u32 mip = 0; mip < num_mips; ++mip) {
+                const size_t mip_w = std::max(src->info.size.width >> mip, 1u);
+                const size_t mip_h = std::max(src->info.size.height >> mip, 1u);
+                const size_t mip_d = std::max(src->info.size.depth >> mip, 1u);
+                const size_t mip_bytes = mip_w * mip_h * mip_d * num_layers * bpp;
+                total_bytes += (mip_bytes + 15ULL) & ~15ULL;
+            }
+            const size_t copy_buf_size = std::clamp<size_t>(total_bytes, 1_MB, 256_MB);
             const auto copy_ref =
                 staging_pool.Request(copy_buf_size, VideoCore::MemoryType::DeviceLocal);
             CopyImageWithBuffer(src, dst, copy_ref.buffer, copy_ref.offset);

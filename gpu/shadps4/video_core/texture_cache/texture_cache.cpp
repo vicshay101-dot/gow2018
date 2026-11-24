@@ -541,6 +541,18 @@ void TextureCache::PublishAliasWrite(ImageId image_id) {
     }
 }
 
+void TextureCache::SyncPairedSibling(ImageId image_id) {
+    Image& image = slot_images[image_id];
+    if (!image.paired_sibling || !IsLiveImage(image.paired_sibling, image.paired_sibling_uid)) {
+        return;
+    }
+    Image& sibling = slot_images[image.paired_sibling];
+    if (sibling.alias_generation > image.alias_generation) {
+        runtime.CopyColorAndDepth(&sibling, &image);
+        image.alias_generation = sibling.alias_generation;
+    }
+}
+
 void TextureCache::InvalidateAlias(Image& image) {
     image.alias_generation = 0;
     if (True(image.flags & ImageFlagBits::Aliased)) {
@@ -725,11 +737,16 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
 
         const bool keep_paired_sibling =
             cache_image.info.guest_address == requested_info.guest_address &&
-            cache_image.info.size == requested_info.size && bpp_match && stencil_match &&
+            cache_image.info.size == requested_info.size && bpp_match &&
             cache_image.info.num_samples == 1 && requested_info.num_samples == 1 &&
             cache_image.info.props.is_depth != requested_info.props.is_depth &&
             !(cache_image.info.resources < requested_info.resources);
-        if (!keep_paired_sibling) {
+        if (keep_paired_sibling) {
+            cache_image.paired_sibling = new_image_id;
+            cache_image.paired_sibling_uid = new_image.image_uid;
+            new_image.paired_sibling = cache_image_id;
+            new_image.paired_sibling_uid = cache_image.image_uid;
+        } else {
             FreeImage(cache_image_id);
         }
         return new_image_id;
@@ -1103,6 +1120,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 
     if (image_id) {
         Image& found = slot_images[image_id];
+        ImageId newest_sibling_id{};
         Image* newest_sibling = nullptr;
         for (const auto& cid : image_ids) {
             if (cid == image_id) {
@@ -1112,13 +1130,20 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
             if (cand.info.guest_address == found.info.guest_address &&
                 cand.info.size == found.info.size && cand.info.num_bits == found.info.num_bits &&
                 cand.info.num_samples == 1 && found.info.num_samples == 1 &&
-                cand.info.props.is_depth != found.info.props.is_depth &&
-                cand.alias_generation > found.alias_generation &&
-                (!newest_sibling || cand.alias_generation > newest_sibling->alias_generation)) {
-                newest_sibling = &cand;
+                cand.info.props.is_depth != found.info.props.is_depth) {
+                found.paired_sibling = cid;
+                found.paired_sibling_uid = cand.image_uid;
+                cand.paired_sibling = image_id;
+                cand.paired_sibling_uid = found.image_uid;
+                if (cand.alias_generation > found.alias_generation &&
+                    (!newest_sibling || cand.alias_generation > newest_sibling->alias_generation)) {
+                    newest_sibling_id = cid;
+                    newest_sibling = &cand;
+                }
             }
         }
         if (newest_sibling) {
+            (void)newest_sibling_id;
             runtime.CopyColorAndDepth(newest_sibling, &found);
             found.alias_generation = newest_sibling->alias_generation;
         }

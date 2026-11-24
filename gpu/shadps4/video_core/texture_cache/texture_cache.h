@@ -160,6 +160,13 @@ public:
     /// Retrieves the depth target with specified properties
     [[nodiscard]] ImageView& FindDepthTarget(ImageId image_id, const ImageDesc& desc);
 
+    [[nodiscard]] bool NeedsPairedSiblingSync(const Image& image) const {
+        if (!image.paired_sibling || !IsLiveImage(image.paired_sibling, image.paired_sibling_uid)) {
+            return false;
+        }
+        return slot_images[image.paired_sibling].alias_generation > image.alias_generation;
+    }
+
     /// gow3: whether UpdateImage has nothing to do for this image (its fast path).
     [[nodiscard]] bool IsUpToDate(ImageId image_id) const {
         const Image& image = slot_images[image_id];
@@ -169,6 +176,7 @@ public:
         constexpr u32 Registered = static_cast<u32>(ImageFlagBits::Registered);
         constexpr u32 Aliased = static_cast<u32>(ImageFlagBits::Aliased);
         return (flags & (Dirty | Registered | Aliased)) == Registered &&
+               !NeedsPairedSiblingSync(image) &&
                !has_backing_writes.load(std::memory_order_acquire) &&
                image.track_addr == image.guest_begin && image.track_addr_end == image.guest_end &&
                image.lru_touched_tick == gc_tick;
@@ -189,6 +197,7 @@ public:
             // Images sharing memory with another take the locked path: SynchronizeAlias.
             constexpr u32 Aliased = static_cast<u32>(ImageFlagBits::Aliased);
             if ((flags & (Dirty | Registered | Aliased)) == Registered &&
+                !NeedsPairedSiblingSync(image) &&
                 !has_backing_writes.load(std::memory_order_acquire) &&
                 image.track_addr == image.guest_begin && image.track_addr_end == image.guest_end &&
                 image.lru_touched_tick == gc_tick) {
@@ -202,7 +211,10 @@ public:
         TouchImage(image);
         RefreshImage(image);
         SynchronizeAlias(image_id);
+        SyncPairedSibling(image_id);
     }
+
+    void SyncPairedSibling(ImageId image_id);
 
     /// gow3: a GPU write to the image (render target, storage): images sharing its memory
     /// copy from it before their next read. From cuesta4/shadPS4 (eltutz), which fixed God of

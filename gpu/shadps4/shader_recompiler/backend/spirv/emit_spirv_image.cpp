@@ -276,18 +276,31 @@ void EmitImageWrite(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id 
     const Id color_type = texture.data_types->Get(4);
     ImageOperands operands;
     operands.Add(spv::ImageOperandsMask::Sample, ms);
+    const Id texel = texture.is_integer ? ctx.OpBitcast(color_type, color) : color;
     if (ctx.profile.supports_image_load_store_lod) {
         operands.Add(spv::ImageOperandsMask::Lod, lod);
+        const Id image = ctx.OpLoad(texture.image_type, image_ptr);
+        ctx.OpImageWrite(image, coords, texel, operands.mask, operands.operands);
     } else if (Sirit::ValidId(lod)) {
         LOG_WARNING(Render, "Fallback for ImageWrite with LOD");
         ASSERT(texture.mip_fallback_mode == MipStorageFallbackMode::DynamicIndex);
+        const Id write_label = ctx.OpLabel();
+        const Id merge_label = ctx.OpLabel();
+        const Id in_bounds = ctx.OpULessThan(ctx.U1[1], lod, ctx.ConstU32(texture.num_bindings));
+        ctx.OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
+        ctx.OpBranchConditional(in_bounds, write_label, merge_label);
+        ctx.AddLabel(write_label);
         const Id single_image_ptr_type =
             ctx.TypePointer(spv::StorageClass::UniformConstant, texture.image_type);
         image_ptr = ctx.OpAccessChain(single_image_ptr_type, image_ptr, std::array{lod});
+        const Id image = ctx.OpLoad(texture.image_type, image_ptr);
+        ctx.OpImageWrite(image, coords, texel, operands.mask, operands.operands);
+        ctx.OpBranch(merge_label);
+        ctx.AddLabel(merge_label);
+    } else {
+        const Id image = ctx.OpLoad(texture.image_type, image_ptr);
+        ctx.OpImageWrite(image, coords, texel, operands.mask, operands.operands);
     }
-    const Id image = ctx.OpLoad(texture.image_type, image_ptr);
-    const Id texel = texture.is_integer ? ctx.OpBitcast(color_type, color) : color;
-    ctx.OpImageWrite(image, coords, texel, operands.mask, operands.operands);
 }
 
 Id EmitCubeFaceIndex(EmitContext& ctx, IR::Inst* inst, Id cube_coords) {
