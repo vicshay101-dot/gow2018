@@ -1120,7 +1120,6 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 
     if (image_id) {
         Image& found = slot_images[image_id];
-        ImageId newest_sibling_id{};
         Image* newest_sibling = nullptr;
         for (const auto& cid : image_ids) {
             if (cid == image_id) {
@@ -1137,13 +1136,11 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
                 cand.paired_sibling_uid = found.image_uid;
                 if (cand.alias_generation > found.alias_generation &&
                     (!newest_sibling || cand.alias_generation > newest_sibling->alias_generation)) {
-                    newest_sibling_id = cid;
                     newest_sibling = &cand;
                 }
             }
         }
         if (newest_sibling) {
-            (void)newest_sibling_id;
             runtime.CopyColorAndDepth(newest_sibling, &found);
             found.alias_generation = newest_sibling->alias_generation;
         }

@@ -272,12 +272,17 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
     volatile u32 fault_off = 0;
     if (sigsetjmp(recover, 0)) {
         const u32 fpc = fault_pc;
+        const u64 faddr = fault_addr;
+        const u32 foff = fault_off;
+        (void)faddr;
+        (void)foff;
         LOG_DEBUG(Render_Recompiler,
                   "SRT walker load faulted at pc={} addr={:#x} off={:#x}; using zero",
-                  fpc, static_cast<u64>(fault_addr), static_cast<u32>(fault_off));
-        if (num_faulted < MaxCallFaults) {
-            faulted_pcs[num_faulted] = fpc;
-            num_faulted = num_faulted + 1;
+                  fpc, faddr, foff);
+        const u32 n = num_faulted;
+        if (n < MaxCallFaults) {
+            faulted_pcs[n] = fpc;
+            num_faulted = n + 1;
         } else {
             __atomic_fetch_or(&code[fpc], OpZeroed, __ATOMIC_RELAXED);
         }
@@ -311,7 +316,7 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
         case OpPushDyn: {
             const u32 offset = (op == OpPushImm ? code[pc++] : values[--count]) << 2;
             u64 next = 0;
-            const uintptr_t base = reinterpret_cast<uintptr_t>(pointer);
+            const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(pointer);
             if (!zeroed && base >= 0x10000ULL) {
                 fault_pc = op_pc;
                 fault_addr = static_cast<u64>(base + offset);
@@ -329,7 +334,7 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
         case OpCopyDyn: {
             const u32 offset = (op == OpCopyImm ? code[pc++] : values[--count]) << 2;
             u32 value = 0;
-            const uintptr_t base = reinterpret_cast<uintptr_t>(pointer);
+            const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(pointer);
             if (!zeroed && base >= 0x10000ULL) {
                 fault_pc = op_pc;
                 fault_addr = static_cast<u64>(base + offset);
@@ -1185,9 +1190,9 @@ static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& p
             any_unresolved = true;
         }
     } else {
-        for (const auto& [src_off_dw, use] : pending) {
+        for (const auto& entry : pending) {
             SrtProgram offset;
-            (void)ComputeOffset(offset, pass_info, src_off_dw);
+            (void)ComputeOffset(offset, pass_info, entry.first);
             LogSrtError("Failed to compute offset for SRT walker", "");
         }
     }

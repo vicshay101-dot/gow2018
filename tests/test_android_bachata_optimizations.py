@@ -23,8 +23,16 @@ def build(source, directory, name, extra=()):
     cpp = Path(directory) / (name + '.cpp')
     exe = Path(directory) / name
     cpp.write_text(source)
-    subprocess.run(['c++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-Werror',
-                    *extra, '-I', str(INCLUDES), str(cpp), '-o', str(exe)], check=True, capture_output=True)
+    proc = subprocess.run(
+        ['c++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-Werror',
+         *extra, '-I', str(INCLUDES), str(cpp), '-o', str(exe)],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        if proc.stdout:
+            print(proc.stdout)
+        if proc.stderr:
+            print(proc.stderr)
+        proc.check_returncode()
     return exe
 
 
@@ -37,6 +45,7 @@ class BachataOptimizationTests(unittest.TestCase):
         actual = cpp[start:end]
         source = r'''
 #include <atomic>
+#include <bit>
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -50,10 +59,12 @@ class BachataOptimizationTests(unittest.TestCase):
 #include <unistd.h>
 #include "shader_recompiler/ir/passes/srt_arm64.h"
 #define ARCH_ARM64 1
+#define LOG_DEBUG(...) ((void)0)
 #define LOG_WARNING(...) ((void)0)
 #define LOG_ERROR(...) ((void)0)
 #define UNREACHABLE_MSG(...) std::abort()
 using u8 = std::uint8_t;
+using s32 = std::int32_t;
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 thread_local sigjmp_buf* runtime_fault_recover = nullptr;
