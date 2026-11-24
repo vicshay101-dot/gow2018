@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.ref == 'refs/heads/android' || github.ref == 'refs/heads/experimental-bionic'
+    if: github.ref == 'refs/heads/android' || github.ref == 'refs/heads/experimental-bionic' || startsWith(github.ref, 'refs/heads/fix/')
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:

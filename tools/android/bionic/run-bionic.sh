@@ -51,6 +51,20 @@ export GOW3_ANDROID_INPUT=1 GOW3_PAD_FILE="$base/android-pad.state" GOW3_PAD_QUI
 export GOW3_IME_FILE="$base/ime.request" GOW3_AUDIO_FIFO="$base/audio.fifo"
 export GOW3_PRESENT_SOCKET="$base/present.sock"
 
+# The game shows its frames through the app's present bridge, which creates this socket only while the
+# app is running. Without it the game waits for the socket and looks frozen, so wait a bounded time and
+# stop with a clear message instead. Launched from the app, the bridge is already up and this passes.
+present_wait=${GOW3_PRESENT_WAIT:-20}
+present_i=0
+while [ ! -S "$GOW3_PRESENT_SOCKET" ] && [ "$present_i" -lt "$present_wait" ]; do
+    sleep 1
+    present_i=$((present_i + 1))
+done
+if [ ! -S "$GOW3_PRESENT_SOCKET" ]; then
+    echo "present: $GOW3_PRESENT_SOCKET nao existe. Abra o God of War (2018) no app, deixe a tela do jogo em primeiro plano e so entao rode o jogo." >&2
+    exit 1
+fi
+
 # ==============================================================================
 # CIRÚRGICO: CORREÇÃO DOS PRINCIPAIS GARGALOS DE FPS PARA CUSA07408 (GOW 2018)
 # ==============================================================================
