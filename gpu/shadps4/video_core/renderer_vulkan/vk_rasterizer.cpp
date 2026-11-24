@@ -127,7 +127,10 @@ bool ShouldSkipShadowAtlas(Vulkan::Runtime& runtime, Vulkan::Scheduler& schedule
         if (const char* env = std::getenv("GOW3_SHADOW_RATE")) {
             return static_cast<u32>(std::strtoul(env, nullptr, 10));
         }
-        return std::getenv("GOW3_ANDROID_PORT") ? 4u : 1u;
+        // The Android port used to skip 3 of 4 shadow atlas updates to save GPU time. That keeps the
+        // atlas frozen between updates and makes the shadows step/flicker as the camera moves, so the
+        // default is no throttle. Set GOW3_SHADOW_RATE=4 to bring the skip back for a performance test.
+        return 1u;
     }();
     if (rate == 1u) {
         return false;
