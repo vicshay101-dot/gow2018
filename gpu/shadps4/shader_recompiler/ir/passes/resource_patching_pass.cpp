@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdio>
 #include <limits>
+#include <string>
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
 #include "shader_recompiler/ir/breadth_first_search.h"
@@ -197,6 +199,69 @@ SharpFetch<T> ConstructSharpFetch(const SharpReference& sharp) {
     return sharp_fetch;
 }
 
+// gow3 stage A diagnostic: can a T# whose offsets are not statically known be described by a
+// recipe built from the IR that defines its dwords? Reports only. Nothing is bound differently.
+static bool SharpRecipeSupported(const IR::Value& value, int depth, std::string& unsupported) {
+    if (value.IsImmediate()) {
+        return true;
+    }
+    const IR::Inst* inst = value.TryInst();
+    if (!inst) {
+        unsupported = "non-inst";
+        return false;
+    }
+    if (depth <= 0) {
+        unsupported = "depth";
+        return false;
+    }
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::GetUserData:
+        return true;
+    case IR::Opcode::ReadConst:
+    case IR::Opcode::ReadConstBuffer:
+    case IR::Opcode::CompositeConstructU32x2:
+    case IR::Opcode::CompositeConstructU32x4:
+    case IR::Opcode::IAdd32:
+    case IR::Opcode::IMul32:
+    case IR::Opcode::ShiftLeftLogical32:
+    case IR::Opcode::ShiftRightLogical32:
+    case IR::Opcode::BitwiseAnd32:
+    case IR::Opcode::BitwiseOr32:
+        break;
+    default:
+        unsupported = std::string{magic_enum::enum_name(inst->GetOpcode())};
+        return false;
+    }
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        if (!SharpRecipeSupported(inst->Arg(i), depth - 1, unsupported)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void LogSharpRecipe(const SharpReference& sharp, const ImageResource& image_res,
+                           const Info& info) {
+    bool unresolved = false;
+    for (u32 i = 0; i < sharp.num_dwords; ++i) {
+        if (((image_res.sharp_fetch.load_mask >> i) & 1) &&
+            image_res.sharp_fetch.offsets[i] == UNKNOWN_LOCATION) {
+            unresolved = true;
+        }
+    }
+    if (!unresolved) {
+        return;
+    }
+    std::string unsupported;
+    bool supported = true;
+    for (u32 i = 0; i < sharp.num_dwords && supported; ++i) {
+        supported = SharpRecipeSupported(sharp.dwords[i], 8, unsupported);
+    }
+    std::printf("SHARP_RECIPE kind=image pgm=%#018llx supported=%d unsupported=%s\n",
+                static_cast<unsigned long long>(info.pgm_hash), supported ? 1 : 0,
+                unsupported.empty() ? "-" : unsupported.c_str());
+}
+
 void PatchBufferSharp(const ResourceDiscovery& resource, Info& info, Descriptors& descriptors,
                       const Profile& profile) {
     IR::Inst& inst = *resource.user;
@@ -249,6 +314,7 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
         .post_op = resource.sharps[0].post_op,
     };
 
+    LogSharpRecipe(resource.sharps[0], image_res, info);
     auto image = image_res.GetSharp(info);
     ASSERT(image.GetType() != AmdGpu::ImageType::Invalid);
 
