@@ -216,6 +216,16 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
                 return std::getenv("GOW3_ANDROID_PORT") ? 0u : 2u;
             }();
             if (write_sync_mode == 0u) {
+                static const bool protect_srt_arena = [] {
+                    const char* env = std::getenv("GOW3_WRITE_FAULT_SYNC_PROTECT_SRT");
+                    return !env || env[0] != '0';
+                }();
+                if (protect_srt_arena && page_start >= 0x1058000000ULL &&
+                    page_start < 0x1059000000ULL) {
+                    DownloadMemory(arena, page_start, page_size);
+                    memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+                    return;
+                }
                 constexpr u64 HotWindow = 1_MB;
                 const VAddr win_start =
                     std::max<VAddr>(Common::AlignDown(device_addr, HotWindow), arena->cpu_addr);

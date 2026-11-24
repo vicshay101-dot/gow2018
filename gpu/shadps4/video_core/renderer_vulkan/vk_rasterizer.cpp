@@ -117,7 +117,8 @@ bool IsKnownFormat(AmdGpu::DataFormat data_fmt, AmdGpu::NumberFormat num_fmt) {
     const u32 d = static_cast<u32>(data_fmt), n = static_cast<u32>(num_fmt);
     return d < 256 && n < 256 && tables.first[d] && tables.second[n];
 }
-bool ShouldSkipShadowAtlas(VideoCore::TextureCache& texture_cache,
+bool ShouldSkipShadowAtlas(Vulkan::Runtime& runtime, Vulkan::Scheduler& scheduler,
+                           VideoCore::TextureCache& texture_cache, const AmdGpu::Regs& regs,
                            VideoCore::ImageId depth_id, bool has_color) {
     if (has_color || !depth_id) {
         return false;
@@ -131,25 +132,82 @@ bool ShouldSkipShadowAtlas(VideoCore::TextureCache& texture_cache,
     if (rate == 1u) {
         return false;
     }
-    const auto& depth = texture_cache.GetImage(depth_id);
+    auto& depth = texture_cache.GetImage(depth_id);
     if (depth.info.size.width < 4096u || depth.info.size.height < 2048u) {
         return false;
     }
+    const bool is_reverse_z =
+        regs.depth_control.depth_func == AmdGpu::CompareFunc::Greater ||
+        regs.depth_control.depth_func == AmdGpu::CompareFunc::GreaterEqual;
+    const float unshadowed_depth =
+        regs.depth_render_control.depth_clear_enable
+            ? regs.depth_clear
+            : (is_reverse_z ? 0.0f : 1.0f);
+    if (rate == 0u) {
+        static VAddr cleared_shadow_addr = 0;
+        static u64 cleared_shadow_uid = 0;
+        if (depth.info.guest_address != cleared_shadow_addr ||
+            depth.image_uid != cleared_shadow_uid) {
+            cleared_shadow_addr = depth.info.guest_address;
+            cleared_shadow_uid = depth.image_uid;
+            scheduler.EndRendering();
+            if (runtime.Transit(&depth, vk::ImageLayout::eTransferDstOptimal,
+                                vk::PipelineStageFlagBits2::eClear,
+                                vk::AccessFlagBits2::eTransferWrite)) {
+                runtime.FlushBarriers();
+            }
+            const vk::ClearDepthStencilValue clear_val{unshadowed_depth, 0u};
+            const vk::ImageSubresourceRange clear_range{
+                .aspectMask = depth.aspect_mask,
+                .baseMipLevel = 0u,
+                .levelCount = depth.info.resources.levels,
+                .baseArrayLayer = 0u,
+                .layerCount = depth.info.resources.layers,
+            };
+            scheduler.Record([img = depth.GetImage(), clear_val,
+                              clear_range](vk::CommandBuffer cmdbuf) {
+                cmdbuf.clearDepthStencilImage(img, vk::ImageLayout::eTransferDstOptimal,
+                                              clear_val, clear_range);
+            });
+            depth.flags |= VideoCore::ImageFlagBits::GpuModified;
+            depth.flags &= ~VideoCore::ImageFlagBits::Dirty;
+            texture_cache.PublishAliasWrite(depth_id);
+            std::printf("GOW3_SHADOW_CLEAR: addr=%#llx %ux%u func=%u clear=%.1f (reverse_z=%d)\n",
+                        static_cast<unsigned long long>(depth.info.guest_address),
+                        depth.info.size.width, depth.info.size.height,
+                        static_cast<unsigned>(regs.depth_control.depth_func), unshadowed_depth,
+                        int(is_reverse_z));
+        }
+        return true;
+    }
     const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
     static VAddr last_shadow_addr = 0;
-    static u64 last_3d_frame = ~0ULL;
+    static u64 last_drawn_frame = ~0ULL;
+    static u64 decided_frame = ~0ULL;
+    static bool skip_this_frame = false;
     static u64 skipped_draws = 0;
     if (depth.info.guest_address != last_shadow_addr) {
         last_shadow_addr = depth.info.guest_address;
-        last_3d_frame = frame;
+        last_drawn_frame = frame;
+        decided_frame = frame;
+        skip_this_frame = false;
+        std::printf("GOW3_SHADOW_ATLAS: addr=%#llx %ux%u func=%u depth_clear=%.1f clear_en=%u\n",
+                    static_cast<unsigned long long>(depth.info.guest_address),
+                    depth.info.size.width, depth.info.size.height,
+                    static_cast<unsigned>(regs.depth_control.depth_func), unshadowed_depth,
+                    static_cast<unsigned>(regs.depth_render_control.depth_clear_enable));
         return false;
     }
-    if (last_3d_frame == ~0ULL || frame == last_3d_frame) {
-        last_3d_frame = frame;
-        return false;
+    if (frame != decided_frame) {
+        decided_frame = frame;
+        if (last_drawn_frame == ~0ULL || (frame - last_drawn_frame) >= rate) {
+            last_drawn_frame = frame;
+            skip_this_frame = false;
+        } else {
+            skip_this_frame = true;
+        }
     }
-    if (rate > 0u && (frame - last_3d_frame) >= rate) {
-        last_3d_frame = frame;
+    if (!skip_this_frame) {
         return false;
     }
     if ((++skipped_draws & 4095u) == 1u) {
@@ -161,69 +219,61 @@ bool ShouldSkipShadowAtlas(VideoCore::TextureCache& texture_cache,
 }
 
 bool ShouldSkipVolumetricFog(u64 pgm_hash) {
+    // Never throttle cs c6d0b871 or its vertical blur consumer cs d127d058 (they share
+    // aliased 0x102a880000 with bloom cs fd824025). Only throttle the atomic 3D volume passes
+    // when explicitly enabled via env (default 1 = disabled for clean rendering).
     if (pgm_hash == 0x69045f31ULL) {
         static const u32 vol3d_rate = [] {
             if (const char* env = std::getenv("GOW3_VOL3D_RATE")) {
                 return static_cast<u32>(std::strtoul(env, nullptr, 10));
             }
-            return std::getenv("GOW3_ANDROID_PORT") ? 3u : 1u;
+            return 1u;
         }();
-        if (vol3d_rate == 1u) {
+        if (vol3d_rate <= 1u) {
             return false;
         }
         const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
         static u64 last_3d_frame = ~0ULL;
-        static u32 warmup_3d = 0;
-        if (last_3d_frame == ~0ULL || frame == last_3d_frame) {
-            if (last_3d_frame == ~0ULL) {
-                warmup_3d = 1u;
+        static u64 decided_frame = ~0ULL;
+        static bool skip_frame = false;
+        if (frame != decided_frame) {
+            decided_frame = frame;
+            if (last_3d_frame == ~0ULL || (frame - last_3d_frame) >= vol3d_rate) {
+                last_3d_frame = frame;
+                skip_frame = false;
+            } else {
+                skip_frame = true;
             }
-            last_3d_frame = frame;
-            return false;
         }
-        if (warmup_3d < 2u || (frame > last_3d_frame && (frame - last_3d_frame) > 30u)) {
-            warmup_3d = (frame > last_3d_frame && (frame - last_3d_frame) > 30u) ? 1u : (warmup_3d + 1u);
-            last_3d_frame = frame;
-            return false;
-        }
-        if (vol3d_rate > 0u && frame > last_3d_frame && (frame - last_3d_frame) >= vol3d_rate) {
-            last_3d_frame = frame;
-            return false;
-        }
-        return true;
+        return skip_frame;
     }
-    if (pgm_hash != 0x64e9edc8ULL && pgm_hash != 0x2a4c6f28ULL && pgm_hash != 0x833d761bULL) {
+    if (pgm_hash != 0x066e2239ULL && pgm_hash != 0x802b72d4ULL) {
         return false;
     }
     static const u32 rate = [] {
         if (const char* env = std::getenv("GOW3_VOLFOG_RATE")) {
             return static_cast<u32>(std::strtoul(env, nullptr, 10));
         }
-        return std::getenv("GOW3_ANDROID_PORT") ? 3u : 1u;
+        return 1u;
     }();
-    if (rate == 1u) {
+    if (rate <= 1u) {
         return false;
     }
     const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
     static u64 last_3d_frame = ~0ULL;
-    static u32 warmup_frames = 0;
+    static u64 decided_frame = ~0ULL;
+    static bool skip_frame = false;
     static u64 skipped_dispatches = 0;
-    if (last_3d_frame == ~0ULL || frame == last_3d_frame) {
-        if (last_3d_frame == ~0ULL) {
-            warmup_frames = 1u;
+    if (frame != decided_frame) {
+        decided_frame = frame;
+        if (last_3d_frame == ~0ULL || (frame - last_3d_frame) >= rate) {
+            last_3d_frame = frame;
+            skip_frame = false;
+        } else {
+            skip_frame = true;
         }
-        last_3d_frame = frame;
-        return false;
     }
-    if (warmup_frames < 2u || (frame > last_3d_frame && (frame - last_3d_frame) > 30u)) {
-        warmup_frames = (frame > last_3d_frame && (frame - last_3d_frame) > 30u)
-                            ? 1u
-                            : (warmup_frames + 1u);
-        last_3d_frame = frame;
-        return false;
-    }
-    if (rate > 0u && frame > last_3d_frame && (frame - last_3d_frame) >= rate) {
-        last_3d_frame = frame;
+    if (!skip_frame) {
         return false;
     }
     if ((++skipped_dispatches & 4095u) == 1u) {
@@ -1134,7 +1184,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 break;
             }
         }
-        if (ShouldSkipShadowAtlas(texture_cache, db_desc.first, has_color)) {
+        if (ShouldSkipShadowAtlas(runtime, scheduler, texture_cache, Regs(), db_desc.first,
+                                  has_color)) {
             for (const auto id : bound_images) {
                 texture_cache.GetImage(id).binding.is_target = 0u;
             }
@@ -1385,7 +1436,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
                 break;
             }
         }
-        if (ShouldSkipShadowAtlas(texture_cache, db_desc.first, has_color)) {
+        if (ShouldSkipShadowAtlas(runtime, scheduler, texture_cache, Regs(), db_desc.first,
+                                  has_color)) {
             for (const auto id : bound_images) {
                 texture_cache.GetImage(id).binding.is_target = 0u;
             }
@@ -2564,7 +2616,8 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         const Shader::MipStorageFallbackMode mip_fallback_mode = image_desc.mip_fallback_mode;
         // Same as image_desc.NumBindings(stage), without fetching the T# again.
         const u32 num_bindings =
-            mip_fallback_mode == Shader::MipStorageFallbackMode::DynamicIndex
+            (mip_fallback_mode == Shader::MipStorageFallbackMode::DynamicIndex &&
+             tsharp.last_level >= tsharp.base_level)
                 ? static_cast<u32>(tsharp.last_level - tsharp.base_level + 1)
                 : 1u;
         const bool proxy_candidate = sample_proxies && num_bindings == 1 &&
