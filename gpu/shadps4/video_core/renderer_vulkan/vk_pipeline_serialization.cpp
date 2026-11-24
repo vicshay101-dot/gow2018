@@ -32,8 +32,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 10u; // gow3: branchless EmitImageWrite LOD clamp (preserve OpLoopMerge)
-static constexpr u32 ShaderMetaVersion = 10u; // gow3: branchless EmitImageWrite LOD clamp (preserve OpLoopMerge)
+static constexpr u32 ShaderBinaryVersion = 11u; // gow3: stage A recipe diagnostic (forces recompile so SHARP_RECIPE is emitted)
+static constexpr u32 ShaderMetaVersion = 11u; // gow3: stage A recipe diagnostic (forces recompile so SHARP_RECIPE is emitted)
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 
