@@ -46,13 +46,20 @@
 // gow3: the same unsupported opcode or SRT offset failure repeats for every descriptor of every
 // shader compiled on the ShaderComp threads. Log each (what, detail) pair at first occurrence,
 // then once every 1024 occurrences, instead of on every call.
+// Hash of the shader whose flatten pass is running on this thread, so each SRT error can be tied to
+// the shader that produced it. Set at the start of FlattenExtendedUserdataPass.
+static thread_local u64 g_srt_pgm_hash = 0;
+
 static void LogSrtError(std::string_view what, std::string_view detail) {
     static std::mutex mutex;
     static std::unordered_map<std::string, u32> counts;
     std::scoped_lock lock{mutex};
-    const u32 count = ++counts[std::string{what} + std::string{detail}];
+    // Count per (shader, message, detail) so each shader gets its own first occurrences logged.
+    const u32 count =
+        ++counts[std::to_string(g_srt_pgm_hash) + '|' + std::string{what} + '|' + std::string{detail}];
     if (count <= 4 || (count & 1023) == 0) {
-        LOG_ERROR(Render_Recompiler, "{} [{}] (occurrence {})", what, detail, count);
+        LOG_ERROR(Render_Recompiler, "{} [{}] pgm={:#018x} (occurrence {})", what, detail,
+                  g_srt_pgm_hash, count);
     }
 }
 
@@ -1323,6 +1330,7 @@ void SimplifyReadConstAddressAdd(IR::Inst& inst) {
 } // Anonymous namespace
 
 void FlattenExtendedUserdataPass(IR::Program& program) {
+    g_srt_pgm_hash = program.info.pgm_hash;
     auto& post_order = program.post_order_blocks;
     PassInfo pass_info;
 
