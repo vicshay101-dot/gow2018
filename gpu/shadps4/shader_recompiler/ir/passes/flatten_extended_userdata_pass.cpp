@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <cstring>
+#include <optional>
 #include <queue>
 #include "common/arch.h"
 #ifdef ARCH_X86_64
@@ -1029,6 +1030,8 @@ static bool EmitComputeOffsetRevBinaryOp(SrtProgram& p, PassInfo& pass_info, IR:
 }
 
 static thread_local bool g_suppress_unflattened_log = false;
+// Set when a Phi operand reaches back to a Phi that is still being resolved (a loop cycle).
+static thread_local bool g_phi_cycle_hit = false;
 
 static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& off_dw) {
     auto inst = off_dw.Inst();
@@ -1098,24 +1101,55 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         p.insert(p.end(), {OpImm, 0u, OpEq});
         return true;
     case IR::Opcode::Phi: {
-        // gow3: loop/branch merges cannot be walked statically. Take the first operand that can
-        // be computed (the value entering the loop); the loop-carried operand loops back here
-        // and is rejected by the active list. Better than leaving the descriptor unflattened.
+        // Loop/branch merge. A merge is only trusted when every operand resolves to the same SRT
+        // program, and no operand reaches back to this merge through a cycle (loop-carried). Picking
+        // the first computable operand bound the loop-entry value, which is wrong when the value
+        // changes per iteration. Such descriptors are now left unresolved and logged.
         static thread_local std::vector<const IR::Inst*> active;
         if (std::find(active.begin(), active.end(), inst) != active.end()) {
+            g_phi_cycle_hit = true;
             return false;
         }
         active.push_back(inst);
-        bool ok = false;
-        for (size_t i = 0; i < inst->NumArgs() && !ok; ++i) {
+        std::optional<SrtProgram> chosen;
+        bool unresolved = false;
+        bool divergent = false;
+        bool loop_carried = false;
+        for (size_t i = 0; i < inst->NumArgs(); ++i) {
             SrtProgram attempt;
-            if (EmitOperand(attempt, pass_info, inst->Arg(i))) {
-                p.insert(p.end(), attempt.begin(), attempt.end());
-                ok = true;
+            const bool prev_cycle = g_phi_cycle_hit;
+            g_phi_cycle_hit = false;
+            const bool ok = EmitOperand(attempt, pass_info, inst->Arg(i));
+            loop_carried = loop_carried || g_phi_cycle_hit;
+            g_phi_cycle_hit = prev_cycle || g_phi_cycle_hit;
+            if (!ok) {
+                unresolved = true;
+                continue;
+            }
+            if (!chosen) {
+                chosen = std::move(attempt);
+            } else if (*chosen != attempt) {
+                divergent = true;
             }
         }
         active.pop_back();
-        return ok;
+        if (!chosen || unresolved || divergent || loop_carried) {
+            if (g_suppress_unflattened_log) {
+                // Intermediate flatten pass: the final pass reports anything still unresolved.
+            } else if (loop_carried) {
+                LogSrtError("Phi is loop-carried, descriptor left unresolved",
+                            magic_enum::enum_name(inst->GetOpcode()));
+            } else if (divergent) {
+                LogSrtError("Phi operands yield different offsets",
+                            magic_enum::enum_name(inst->GetOpcode()));
+            } else {
+                LogSrtError("Phi operand not computable",
+                            magic_enum::enum_name(inst->GetOpcode()));
+            }
+            return false;
+        }
+        p.insert(p.end(), chosen->begin(), chosen->end());
+        return true;
     }
     default:
         if (!g_suppress_unflattened_log) {
@@ -1216,7 +1250,7 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
     SrtProgram program{SrtMagic};
     pass_info.dst_off_dw = NUM_USER_DATA_REGS;
     ASSERT(pass_info.dst_off_dw == info.srt_info.flattened_bufsize_dw);
-    constexpr u32 MaxFlattenPasses = 16;
+    constexpr u32 MaxFlattenPasses = 32;
     const bool prev_suppress = g_suppress_unflattened_log;
     g_suppress_unflattened_log = true;
     bool any_unresolved = false;
