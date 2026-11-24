@@ -15,6 +15,7 @@
 #else
 #include <atomic>
 #include <algorithm>
+#include <cstdio>
 #include <bit>
 #include <vector>
 #include <memory>
@@ -1035,6 +1036,30 @@ static bool EmitComputeOffsetRevBinaryOp(SrtProgram& p, PassInfo& pass_info, IR:
     return true;
 }
 
+// gow3 diagnostic: prints the instruction chain behind the first unflattened ReadConstBuffer of each
+// shader, so the log shows what the offset depends on. Does not change any decision.
+static void DumpSrtChain(const IR::Inst* inst, int depth, int indent) {
+    if (!inst) return;
+    std::printf("SRT_CHAIN pgm=%#018llx %*s%s", static_cast<unsigned long long>(g_srt_pgm_hash),
+                indent * 2, "", std::string{magic_enum::enum_name(inst->GetOpcode())}.c_str());
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        const IR::Value arg = inst->Arg(i);
+        if (arg.TryInst()) {
+            std::printf(" [%zu]", i);
+        } else {
+            std::printf(" [%zu:imm]", i);
+        }
+    }
+    std::printf("\n");
+    if (depth <= 0) return;
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        const IR::Value arg = inst->Arg(i);
+        if (const IR::Inst* child = arg.TryInst()) {
+            DumpSrtChain(child, depth - 1, indent + 1);
+        }
+    }
+}
+
 static thread_local bool g_suppress_unflattened_log = false;
 
 static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& off_dw) {
@@ -1052,6 +1077,12 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         if (!g_suppress_unflattened_log) {
             // gow3: the dependency is not flattened (yet): name it so the log shows the cause.
             LogSrtError("Offset depends on unflattened", magic_enum::enum_name(inst->GetOpcode()));
+            static thread_local std::vector<u64> dumped_shaders;
+            if (std::find(dumped_shaders.begin(), dumped_shaders.end(), g_srt_pgm_hash) ==
+                dumped_shaders.end()) {
+                dumped_shaders.push_back(g_srt_pgm_hash);
+                DumpSrtChain(inst, 6, 0);
+            }
         }
         return false;
     case IR::Opcode::IAdd32: return EmitComputeOffsetOp(p, pass_info, inst, OpAdd, 2);
