@@ -201,8 +201,15 @@ SharpFetch<T> ConstructSharpFetch(const SharpReference& sharp) {
 
 // gow3 stage A diagnostic: can a T# whose offsets are not statically known be described by a
 // recipe built from the IR that defines its dwords? Reports only. Nothing is bound differently.
-static bool SharpRecipeSupported(const IR::Value& value, int depth, std::string& unsupported) {
+// Builds a structural signature of the recipe that defines a dword. A Phi is accepted only when all
+// its operands produce the same signature, so the value does not depend on which path runs.
+static bool RecipeSig(const IR::Value& value, int depth, std::string& sig, std::string& unsupported) {
     if (value.IsImmediate()) {
+        if (value.type == IR::Type::U32) {
+            sig += "u" + std::to_string(value.U32());
+        } else {
+            sig += "i" + std::to_string(static_cast<int>(value.type));
+        }
         return true;
     }
     const IR::Inst* inst = value.TryInst();
@@ -214,31 +221,60 @@ static bool SharpRecipeSupported(const IR::Value& value, int depth, std::string&
         unsupported = "depth";
         return false;
     }
-    switch (inst->GetOpcode()) {
-    case IR::Opcode::GetUserData:
+    const IR::Opcode op = inst->GetOpcode();
+    if (op == IR::Opcode::GetUserData) {
+        sig += "GUD(";
+    } else if (op == IR::Opcode::Phi) {
+        std::string first;
+        for (size_t i = 0; i < inst->NumArgs(); ++i) {
+            std::string branch;
+            if (!RecipeSig(inst->Arg(i), depth - 1, branch, unsupported)) {
+                return false;
+            }
+            if (i == 0) {
+                first = branch;
+            } else if (branch != first) {
+                unsupported = "Phi-divergent";
+                return false;
+            }
+        }
+        sig += first;
         return true;
-    case IR::Opcode::ReadConst:
-    case IR::Opcode::ReadConstBuffer:
-    case IR::Opcode::CompositeConstructU32x2:
-    case IR::Opcode::CompositeConstructU32x4:
-    case IR::Opcode::IAdd32:
-    case IR::Opcode::IMul32:
-    case IR::Opcode::FindILsb32:
-    case IR::Opcode::ShiftLeftLogical32:
-    case IR::Opcode::ShiftRightLogical32:
-    case IR::Opcode::BitwiseAnd32:
-    case IR::Opcode::BitwiseOr32:
-        break;
-    default:
-        unsupported = std::string{magic_enum::enum_name(inst->GetOpcode())};
-        return false;
+    } else {
+        switch (op) {
+        case IR::Opcode::ReadConst:
+        case IR::Opcode::ReadConstBuffer:
+        case IR::Opcode::CompositeConstructU32x2:
+        case IR::Opcode::CompositeConstructU32x4:
+        case IR::Opcode::IAdd32:
+        case IR::Opcode::IMul32:
+        case IR::Opcode::FindILsb32:
+        case IR::Opcode::ShiftLeftLogical32:
+        case IR::Opcode::ShiftRightLogical32:
+        case IR::Opcode::BitwiseAnd32:
+        case IR::Opcode::BitwiseOr32:
+            break;
+        default:
+            unsupported = std::string{magic_enum::enum_name(op)};
+            return false;
+        }
+        sig += std::string{magic_enum::enum_name(op)} + "(";
     }
     for (size_t i = 0; i < inst->NumArgs(); ++i) {
-        if (!SharpRecipeSupported(inst->Arg(i), depth - 1, unsupported)) {
+        if (i > 0) {
+            sig += ",";
+        }
+        if (!RecipeSig(inst->Arg(i), depth - 1, sig, unsupported)) {
             return false;
         }
     }
+    sig += ")";
     return true;
+}
+
+static bool SharpRecipeSupported(const IR::Value& value, int depth, std::string& unsupported) {
+    std::string sig;
+    return RecipeSig(value, depth, sig, unsupported);
 }
 
 static void LogSharpRecipe(const SharpReference& sharp, const ImageResource& image_res,
