@@ -10,11 +10,12 @@ enum SrtOp : std::uint32_t {
     OpEnd, OpPushImm, OpPushDyn, OpPop, OpCopyImm, OpCopyDyn, OpUserData, OpFlat,
     OpImm, OpAdd, OpSub, OpMul, OpShl, OpShr, OpAnd, OpOr, OpXor, OpNot,
     OpUMin, OpUMax, OpBitFieldUExtract, OpFindILsb,
+    OpBitFieldInsert, OpSelect, OpEq, OpNe, OpULt, OpULe, OpSLt, OpSLe,
 };
 constexpr std::uint32_t OpZeroed = 0x80000000u, SrtMagic = 0x42545253u;
 constexpr std::uint32_t MaxDepth = 64, MaxValues = 32;
 
-// x0=user data, x1=flattened data, x2=current pointer; x3-x5 are scratch.
+// x0=user data, x1=flattened data, x2=current pointer; x3-x7 are scratch.
 // Only caller-saved registers are used. Stack layout: 64 pointers then 32 values.
 inline std::vector<std::uint32_t> Compile(std::span<const std::uint32_t> program) {
     using U32 = std::uint32_t;
@@ -60,10 +61,25 @@ inline std::vector<std::uint32_t> Compile(std::span<const std::uint32_t> program
             if (push) {
                 if (depth == MaxDepth) return {};
                 emit(0xf90003e2u | (depth++ << 10));
-                emit(zero ? 0xd2800002u : 0xf8646842u);
-                if (!zero) emit(0xd340bc42u); // mask guest pointer to 48 bits
+                if (zero) {
+                    emit(0xd2800002u); // mov x2, #0
+                } else {
+                    emit(0xaa0203e3u); // mov x3, x2
+                    emit(0xd2800002u); // mov x2, #0
+                    emit(0xf140047fu); // cmp x3, #0x1000
+                    emit(0x54000063u); // b.lo +12 (skip ldr + ubfx)
+                    emit(0xf8646862u); // ldr x2, [x3, w4, uxtw]
+                    emit(0xd340bc42u); // mask guest pointer to 48 bits
+                }
             } else {
-                emit(zero ? 0x52800003u : 0xb8646843u);
+                if (zero) {
+                    emit(0x52800003u); // mov w3, #0
+                } else {
+                    emit(0x52800003u); // mov w3, #0
+                    emit(0xf140045fu); // cmp x2, #0x1000
+                    emit(0x54000043u); // b.lo +8 (skip ldr)
+                    emit(0xb8646843u); // ldr w3, [x2, w4, uxtw]
+                }
                 const U32 offset = next();
                 if (offset > 262143) return {};
                 imm(5, offset * 4); emit(0xb8256823u);
@@ -96,6 +112,27 @@ inline std::vector<std::uint32_t> Compile(std::span<const std::uint32_t> program
             load(5, --count); load(4, --count); load(3, count - 1);
             emit(0x1ac42463u); imm(4, 1); emit(0x1ac52084u);
             emit(0x51000484u); emit(0x0a040063u); store(3, count - 1);
+        } else if (op == OpBitFieldInsert) {
+            if (count < 4) return {};
+            load(6, --count); load(5, --count); load(4, --count); load(3, count - 1);
+            emit(0x710080dfu); // cmp w6, #32
+            imm(7, 32);        // mov w7, #32
+            emit(0x1a8730c6u); // csel w6, w6, w7, lo
+            emit(0xd2800027u); // mov x7, #1
+            emit(0x9ac620e7u); // lsl x7, x7, x6
+            emit(0xd10004e7u); // sub x7, x7, #1 -> w7 = mask
+            emit(0x0a070084u); // and w4, w4, w7 -> insert & mask
+            emit(0x1ac52084u); // lsl w4, w4, w5 -> (insert & mask) << offset
+            emit(0x1ac520e7u); // lsl w7, w7, w5 -> mask << offset
+            emit(0x0a270063u); // bic w3, w3, w7 -> base & ~(mask << offset)
+            emit(0x2a040063u); // orr w3, w3, w4
+            store(3, count - 1);
+        } else if (op == OpSelect) {
+            if (count < 3) return {};
+            load(5, --count); load(4, --count); load(3, count - 1);
+            emit(0x7100007fu); // cmp w3, #0
+            emit(0x1a851083u); // csel w3, w4, w5, ne
+            store(3, count - 1);
         } else {
             if (count < 2) return {};
             load(4, --count); load(3, count - 1);
@@ -110,6 +147,12 @@ inline std::vector<std::uint32_t> Compile(std::span<const std::uint32_t> program
             case OpXor: emit(0x4a040063u); break;
             case OpUMin: emit(0x6b04007fu); emit(0x1a843063u); break;
             case OpUMax: emit(0x6b04007fu); emit(0x1a848063u); break;
+            case OpEq: emit(0x6b04007fu); emit(0x1a9f17e3u); break;
+            case OpNe: emit(0x6b04007fu); emit(0x1a9f07e3u); break;
+            case OpULt: emit(0x6b04007fu); emit(0x1a9f27e3u); break;
+            case OpULe: emit(0x6b04007fu); emit(0x1a9f87e3u); break;
+            case OpSLt: emit(0x6b04007fu); emit(0x1a9fa7e3u); break;
+            case OpSLe: emit(0x6b04007fu); emit(0x1a9fc7e3u); break;
             default: return {};
             }
             store(3, count - 1);

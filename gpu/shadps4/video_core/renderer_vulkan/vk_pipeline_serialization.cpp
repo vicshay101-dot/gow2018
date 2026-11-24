@@ -32,8 +32,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 8u; // gow3: SRT bounded-retry flattening fix
-static constexpr u32 ShaderMetaVersion = 8u; // gow3: SRT bounded-retry flattening fix
+static constexpr u32 ShaderBinaryVersion = 9u; // gow3: SRT BitFieldInsert/Select/multi-pass + ImageWrite LOD guard
+static constexpr u32 ShaderMetaVersion = 9u; // gow3: SRT BitFieldInsert/Select/multi-pass + ImageWrite LOD guard
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 

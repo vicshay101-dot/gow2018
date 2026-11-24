@@ -15,6 +15,7 @@
 #else
 #include <atomic>
 #include <algorithm>
+#include <bit>
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -263,22 +264,45 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
     u32* const code = const_cast<u32*>(program);
     sigjmp_buf* const previous = runtime_fault_recover;
     sigjmp_buf recover;
-    u32* volatile faulted = nullptr;
+    constexpr u32 MaxCallFaults = 32;
+    u32 faulted_pcs[MaxCallFaults];
+    volatile u32 num_faulted = 0;
+    volatile u32 fault_pc = 0;
+    volatile u64 fault_addr = 0;
+    volatile u32 fault_off = 0;
     if (sigsetjmp(recover, 0)) {
-        __atomic_fetch_or(faulted, OpZeroed, __ATOMIC_RELAXED);
-        LOG_WARNING(Render_Recompiler, "SRT walker load faulted; using zero");
+        const u32 fpc = fault_pc;
+        LOG_DEBUG(Render_Recompiler,
+                  "SRT walker load faulted at pc={} addr={:#x} off={:#x}; using zero",
+                  fpc, static_cast<u64>(fault_addr), static_cast<u32>(fault_off));
+        if (num_faulted < MaxCallFaults) {
+            faulted_pcs[num_faulted] = fpc;
+            num_faulted = num_faulted + 1;
+        } else {
+            __atomic_fetch_or(&code[fpc], OpZeroed, __ATOMIC_RELAXED);
+        }
     }
     runtime_fault_recover = &recover;
+    const auto is_call_zeroed = [&](u32 op_pc) -> bool {
+        const u32 n = num_faulted;
+        for (u32 i = 0; i < n; ++i) {
+            if (faulted_pcs[i] == op_pc) {
+                return true;
+            }
+        }
+        return false;
+    };
     const u8* stack[MaxDepth];
     u32 values[MaxValues];
     u32 depth = 0, count = 0;
     const u8* pointer = reinterpret_cast<const u8*>(user_data);
 
     for (u32 pc = 1;;) {
+        const u32 op_pc = pc;
         u32* const at = &code[pc++];
         const u32 word = __atomic_load_n(at, __ATOMIC_RELAXED);
         const u32 op = word & ~OpZeroed;
-        const bool zeroed = (word & OpZeroed) != 0;
+        const bool zeroed = ((word & OpZeroed) != 0) || is_call_zeroed(op_pc);
         switch (op) {
         case OpEnd:
             runtime_fault_recover = previous;
@@ -287,8 +311,11 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
         case OpPushDyn: {
             const u32 offset = (op == OpPushImm ? code[pc++] : values[--count]) << 2;
             u64 next = 0;
-            if (!zeroed) {
-                faulted = at;
+            const uintptr_t base = reinterpret_cast<uintptr_t>(pointer);
+            if (!zeroed && base >= 0x10000ULL) {
+                fault_pc = op_pc;
+                fault_addr = static_cast<u64>(base + offset);
+                fault_off = offset;
                 std::memcpy(&next, pointer + offset, sizeof(next));
             }
             stack[depth++] = pointer;
@@ -302,8 +329,11 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
         case OpCopyDyn: {
             const u32 offset = (op == OpCopyImm ? code[pc++] : values[--count]) << 2;
             u32 value = 0;
-            if (!zeroed) {
-                faulted = at;
+            const uintptr_t base = reinterpret_cast<uintptr_t>(pointer);
+            if (!zeroed && base >= 0x10000ULL) {
+                fault_pc = op_pc;
+                fault_addr = static_cast<u64>(base + offset);
+                fault_off = offset;
                 std::memcpy(&value, pointer + offset, sizeof(value));
             }
             flat[code[pc++]] = value;
@@ -319,11 +349,32 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
         case OpNot:
             values[count - 1] = ~values[count - 1];
             break;
+        case OpFindILsb: {
+            u32& v = values[count - 1];
+            v = v ? static_cast<u32>(std::countr_zero(v)) : ~0u;
+            break;
+        }
         case OpBitFieldUExtract: {
             const u32 bits = values[--count];
             const u32 offset = values[--count];
             u32& base = values[count - 1];
             base = (base >> (offset & 31)) & ((1u << (bits & 31)) - 1);
+            break;
+        }
+        case OpBitFieldInsert: {
+            const u32 bits = values[--count];
+            const u32 offset = values[--count] & 31u;
+            const u32 insert = values[--count];
+            u32& base = values[count - 1];
+            const u32 mask = bits >= 32u ? 0xFFFFFFFFu : ((1u << bits) - 1u);
+            base = (base & ~(mask << offset)) | ((insert & mask) << offset);
+            break;
+        }
+        case OpSelect: {
+            const u32 false_val = values[--count];
+            const u32 true_val = values[--count];
+            u32& cond = values[count - 1];
+            cond = cond ? true_val : false_val;
             break;
         }
         default: {
@@ -340,6 +391,12 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
             case OpXor: a ^= b; break;
             case OpUMin: a = std::min(a, b); break;
             case OpUMax: a = std::max(a, b); break;
+            case OpEq: a = (a == b) ? 1u : 0u; break;
+            case OpNe: a = (a != b) ? 1u : 0u; break;
+            case OpULt: a = (a < b) ? 1u : 0u; break;
+            case OpULe: a = (a <= b) ? 1u : 0u; break;
+            case OpSLt: a = (static_cast<s32>(a) < static_cast<s32>(b)) ? 1u : 0u; break;
+            case OpSLe: a = (static_cast<s32>(a) <= static_cast<s32>(b)) ? 1u : 0u; break;
             default: UNREACHABLE_MSG("Bad SRT program op {}", op);
             }
             break;
@@ -738,6 +795,24 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     case IR::Opcode::UMin32:
     case IR::Opcode::UMax32:
     case IR::Opcode::BitFieldUExtract:
+    case IR::Opcode::BitFieldInsert32:
+    case IR::Opcode::FindILsb32:
+    case IR::Opcode::SelectU32:
+    case IR::Opcode::SelectU1:
+    case IR::Opcode::IEqual32:
+    case IR::Opcode::INotEqual32:
+    case IR::Opcode::ULessThan32:
+    case IR::Opcode::ULessThanEqual32:
+    case IR::Opcode::UGreaterThan32:
+    case IR::Opcode::UGreaterThanEqual32:
+    case IR::Opcode::SLessThan32:
+    case IR::Opcode::SLessThanEqual32:
+    case IR::Opcode::SGreaterThan32:
+    case IR::Opcode::SGreaterThanEqual32:
+    case IR::Opcode::LogicalAnd:
+    case IR::Opcode::LogicalOr:
+    case IR::Opcode::LogicalXor:
+    case IR::Opcode::LogicalNot:
         return true;
     default:
         return false;
@@ -924,7 +999,8 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
 
 static bool EmitOperand(SrtProgram& p, PassInfo& pass_info, const IR::Value& value) {
     if (value.IsImmediate()) {
-        p.insert(p.end(), {OpImm, value.U32()});
+        const u32 imm = value.Type() == IR::Type::U1 ? (value.U1() ? 1u : 0u) : value.U32();
+        p.insert(p.end(), {OpImm, imm});
         return true;
     }
     return ComputeOffset(p, pass_info, value);
@@ -932,10 +1008,17 @@ static bool EmitOperand(SrtProgram& p, PassInfo& pass_info, const IR::Value& val
 
 static bool EmitComputeOffsetOp(SrtProgram& p, PassInfo& pass_info, IR::Inst* inst,
                                 SrtOp op, size_t args) {
-    ASSERT(!inst->AreAllArgsImmediates());
     for (size_t i = 0; i < args; ++i) {
         ABORT_ON_FAILURE(EmitOperand(p, pass_info, inst->Arg(i)));
     }
+    p.push_back(op);
+    return true;
+}
+
+static bool EmitComputeOffsetRevBinaryOp(SrtProgram& p, PassInfo& pass_info, IR::Inst* inst,
+                                         SrtOp op) {
+    ABORT_ON_FAILURE(EmitOperand(p, pass_info, inst->Arg(1)));
+    ABORT_ON_FAILURE(EmitOperand(p, pass_info, inst->Arg(0)));
     p.push_back(op);
     return true;
 }
@@ -972,8 +1055,43 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
     case IR::Opcode::UMax32: return EmitComputeOffsetOp(p, pass_info, inst, OpUMax, 2);
     case IR::Opcode::BitFieldUExtract:
         return EmitComputeOffsetOp(p, pass_info, inst, OpBitFieldUExtract, 3);
+    case IR::Opcode::BitFieldInsert32:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpBitFieldInsert, 4);
     case IR::Opcode::FindILsb32:
         return EmitComputeOffsetOp(p, pass_info, inst, OpFindILsb, 1);
+    case IR::Opcode::SelectU32:
+    case IR::Opcode::SelectU1:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpSelect, 3);
+    case IR::Opcode::IEqual32:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpEq, 2);
+    case IR::Opcode::INotEqual32:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpNe, 2);
+    case IR::Opcode::ULessThan32:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpULt, 2);
+    case IR::Opcode::ULessThanEqual32:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpULe, 2);
+    case IR::Opcode::UGreaterThan32:
+        return EmitComputeOffsetRevBinaryOp(p, pass_info, inst, OpULt);
+    case IR::Opcode::UGreaterThanEqual32:
+        return EmitComputeOffsetRevBinaryOp(p, pass_info, inst, OpULe);
+    case IR::Opcode::SLessThan32:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpSLt, 2);
+    case IR::Opcode::SLessThanEqual32:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpSLe, 2);
+    case IR::Opcode::SGreaterThan32:
+        return EmitComputeOffsetRevBinaryOp(p, pass_info, inst, OpSLt);
+    case IR::Opcode::SGreaterThanEqual32:
+        return EmitComputeOffsetRevBinaryOp(p, pass_info, inst, OpSLe);
+    case IR::Opcode::LogicalAnd:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpAnd, 2);
+    case IR::Opcode::LogicalOr:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpOr, 2);
+    case IR::Opcode::LogicalXor:
+        return EmitComputeOffsetOp(p, pass_info, inst, OpXor, 2);
+    case IR::Opcode::LogicalNot:
+        ABORT_ON_FAILURE(EmitOperand(p, pass_info, inst->Arg(0)));
+        p.insert(p.end(), {OpImm, 0u, OpEq});
+        return true;
     case IR::Opcode::Phi: {
         // gow3: loop/branch merges cannot be walked statically. Take the first operand that can
         // be computed (the value entering the loop); the loop-carried operand loops back here
@@ -995,74 +1113,95 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         return ok;
     }
     default:
-        LogSrtError("Unexpected instruction for offset computation", magic_enum::enum_name(inst->GetOpcode()));
+        if (!g_suppress_unflattened_log) {
+            LogSrtError("Unexpected instruction for offset computation",
+                        magic_enum::enum_name(inst->GetOpcode()));
+        }
         return false;
     }
 }
 
 static void VisitPointer(const IR::Value& off_dw, IR::Inst* subtree, PassInfo& pass_info,
-                         SrtProgram& p) {
+                         SrtProgram& p, bool& any_progress, bool& any_unresolved, bool log_errors) {
     if (subtree->GetOpcode() == IR::Opcode::ReadConst && subtree->Flags<u16>() == 0 ||
         subtree->GetOpcode() == IR::Opcode::ReadConstBuffer &&
             subtree->Flags<IR::BufferInstInfo>().flatbuf_off_dw == 0) {
         return;
     }
+    SrtProgram push_code;
     if (off_dw.IsImmediate()) {
-        p.insert(p.end(), {OpPushImm, off_dw.U32()});
+        push_code.insert(push_code.end(), {OpPushImm, off_dw.U32()});
     } else {
-        SrtProgram offset;
-        if (!ComputeOffset(offset, pass_info, off_dw)) {
-            LogSrtError("Failed to compute offset for SRT walker", "");
+        if (!ComputeOffset(push_code, pass_info, off_dw)) {
+            any_unresolved = true;
+            if (log_errors) {
+                LogSrtError("Failed to compute offset for SRT walker", "");
+            }
             return;
         }
-        p.insert(p.end(), offset.begin(), offset.end());
-        p.push_back(OpPushDyn);
+        push_code.push_back(OpPushDyn);
     }
     auto* use_list = pass_info.GetUsesAsPointer(subtree);
     ASSERT(use_list);
+    SrtProgram body;
     std::vector<std::pair<IR::Value, IR::Inst*>> pending;
     for (auto [src_off_dw, use] : *use_list) {
+        if (GetFlatbufOffset(use) != 0) {
+            continue;
+        }
         if (src_off_dw.IsImmediate()) {
-            p.insert(p.end(), {OpCopyImm, src_off_dw.U32(), pass_info.dst_off_dw});
-            SetFlatbufOffset(use, pass_info.dst_off_dw++);
+            if (!log_errors) {
+                body.insert(body.end(), {OpCopyImm, src_off_dw.U32(), pass_info.dst_off_dw});
+                SetFlatbufOffset(use, pass_info.dst_off_dw++);
+                any_progress = true;
+            }
         } else {
             pending.emplace_back(src_off_dw, use);
         }
     }
-    const bool prev_suppress = g_suppress_unflattened_log;
-    g_suppress_unflattened_log = true;
-    while (!pending.empty()) {
-        std::vector<std::pair<IR::Value, IR::Inst*>> next_pending;
-        next_pending.reserve(pending.size());
-        bool progress = false;
-        for (const auto& [src_off_dw, use] : pending) {
-            SrtProgram offset;
-            if (ComputeOffset(offset, pass_info, src_off_dw)) {
-                p.insert(p.end(), offset.begin(), offset.end());
-                p.insert(p.end(), {OpCopyDyn, pass_info.dst_off_dw});
-                SetFlatbufOffset(use, pass_info.dst_off_dw++);
-                progress = true;
-            } else {
-                next_pending.emplace_back(src_off_dw, use);
+    if (!log_errors) {
+        while (!pending.empty()) {
+            std::vector<std::pair<IR::Value, IR::Inst*>> next_pending;
+            next_pending.reserve(pending.size());
+            bool progress = false;
+            for (const auto& [src_off_dw, use] : pending) {
+                SrtProgram offset;
+                if (ComputeOffset(offset, pass_info, src_off_dw)) {
+                    body.insert(body.end(), offset.begin(), offset.end());
+                    body.insert(body.end(), {OpCopyDyn, pass_info.dst_off_dw});
+                    SetFlatbufOffset(use, pass_info.dst_off_dw++);
+                    progress = true;
+                    any_progress = true;
+                } else {
+                    next_pending.emplace_back(src_off_dw, use);
+                }
+            }
+            pending = std::move(next_pending);
+            if (!progress) {
+                break;
             }
         }
-        pending = std::move(next_pending);
-        if (!progress) {
-            break;
+        if (!pending.empty()) {
+            any_unresolved = true;
         }
-    }
-    g_suppress_unflattened_log = prev_suppress;
-    for (const auto& [src_off_dw, use] : pending) {
-        SrtProgram offset;
-        (void)ComputeOffset(offset, pass_info, src_off_dw);
-        LogSrtError("Failed to compute offset for SRT walker", "");
+    } else {
+        for (const auto& [src_off_dw, use] : pending) {
+            SrtProgram offset;
+            (void)ComputeOffset(offset, pass_info, src_off_dw);
+            LogSrtError("Failed to compute offset for SRT walker", "");
+        }
     }
     for (const auto [src_off_dw, use] : *use_list) {
         if (pass_info.GetUsesAsPointer(use)) {
-            VisitPointer(src_off_dw, use, pass_info, p);
+            VisitPointer(src_off_dw, use, pass_info, body, any_progress, any_unresolved,
+                         log_errors);
         }
     }
-    p.push_back(OpPop);
+    if (!log_errors && !body.empty()) {
+        p.insert(p.end(), push_code.begin(), push_code.end());
+        p.insert(p.end(), body.begin(), body.end());
+        p.push_back(OpPop);
+    }
 }
 
 static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
@@ -1072,8 +1211,30 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
     SrtProgram program{SrtMagic};
     pass_info.dst_off_dw = NUM_USER_DATA_REGS;
     ASSERT(pass_info.dst_off_dw == info.srt_info.flattened_bufsize_dw);
-    for (const auto& [sgpr_base, root] : pass_info.srt_roots) {
-        VisitPointer(IR::Value(static_cast<u32>(sgpr_base)), root, pass_info, program);
+    constexpr u32 MaxFlattenPasses = 16;
+    const bool prev_suppress = g_suppress_unflattened_log;
+    g_suppress_unflattened_log = true;
+    bool any_unresolved = false;
+    for (u32 pass = 0; pass < MaxFlattenPasses; ++pass) {
+        bool any_progress = false;
+        any_unresolved = false;
+        for (const auto& [sgpr_base, root] : pass_info.srt_roots) {
+            VisitPointer(IR::Value(static_cast<u32>(sgpr_base)), root, pass_info, program,
+                         any_progress, any_unresolved, false);
+        }
+        if (!any_unresolved || !any_progress) {
+            break;
+        }
+    }
+    g_suppress_unflattened_log = prev_suppress;
+    if (any_unresolved) {
+        SrtProgram dummy;
+        bool dummy_progress = false;
+        bool dummy_unresolved = false;
+        for (const auto& [sgpr_base, root] : pass_info.srt_roots) {
+            VisitPointer(IR::Value(static_cast<u32>(sgpr_base)), root, pass_info, dummy,
+                         dummy_progress, dummy_unresolved, true);
+        }
     }
     program.push_back(OpEnd);
     const size_t size = program.size() * sizeof(u32);
@@ -1186,46 +1347,62 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
 
             all_readconsts.push_back(&inst);
 
+            auto enqueue = [&](IR::Inst* node) {
+                if (std::ranges::find(visited, node) == visited.end()) {
+                    visited.push_back(node);
+                    queue.push(node);
+                }
+            };
+
             auto offset = inst.Arg(1);
-            if (offset.IsImmediate()) {
-                continue;
+            if (!offset.IsImmediate()) {
+                enqueue(offset.Inst());
+            }
+            if (auto* base = inst.Arg(0).TryInst(); base && base->NumArgs() >= 2) {
+                for (size_t i = 0; i < 2; ++i) {
+                    if (auto* base_arg = base->Arg(i).TryInst();
+                        base_arg && base_arg->GetOpcode() == IR::Opcode::ReadConstBuffer) {
+                        enqueue(base_arg);
+                    }
+                }
             }
 
-            queue.push(offset.Inst());
             while (!queue.empty()) {
-                IR::Inst* inst{queue.front()};
+                IR::Inst* cur{queue.front()};
                 queue.pop();
 
-                if (inst->GetOpcode() == IR::Opcode::ReadConstBuffer) {
-                    auto buffer_inst_info = inst->Flags<IR::BufferInstInfo>();
+                if (cur->GetOpcode() == IR::Opcode::ReadConstBuffer) {
+                    auto buffer_inst_info = cur->Flags<IR::BufferInstInfo>();
                     if (!buffer_inst_info.sharp_source.Value()) {
-                        all_readconsts.push_back(inst);
-                        auto offset = inst->Arg(1);
-                        if (!offset.IsImmediate()) {
-                            auto arg_inst = offset.Inst();
-                            if (std::ranges::find(visited, arg_inst) == visited.end()) {
-                                visited.push_back(arg_inst);
-                                queue.push(arg_inst);
+                        all_readconsts.push_back(cur);
+                        auto cur_offset = cur->Arg(1);
+                        if (!cur_offset.IsImmediate()) {
+                            enqueue(cur_offset.Inst());
+                        }
+                        if (auto* cur_base = cur->Arg(0).TryInst();
+                            cur_base && cur_base->NumArgs() >= 2) {
+                            for (size_t i = 0; i < 2; ++i) {
+                                if (auto* base_arg = cur_base->Arg(i).TryInst();
+                                    base_arg &&
+                                    base_arg->GetOpcode() == IR::Opcode::ReadConstBuffer) {
+                                    enqueue(base_arg);
+                                }
                             }
                         }
                     }
                     continue;
                 }
-                if (inst->GetOpcode() == IR::Opcode::GetUserData ||
-                    inst->GetOpcode() == IR::Opcode::ReadConst ||
-                    !IsAllowedOffsetInstruction(inst)) {
+                if (cur->GetOpcode() == IR::Opcode::GetUserData ||
+                    cur->GetOpcode() == IR::Opcode::ReadConst ||
+                    !IsAllowedOffsetInstruction(cur)) {
                     continue;
                 }
-                for (size_t arg = inst->NumArgs(); arg--;) {
-                    const IR::Value arg_value = inst->Arg(arg);
+                for (size_t arg = cur->NumArgs(); arg--;) {
+                    const IR::Value arg_value = cur->Arg(arg);
                     if (arg_value.IsImmediate()) {
                         continue;
                     }
-                    IR::Inst* arg_inst = arg_value.Inst();
-                    if (std::ranges::find(visited, arg_inst) == visited.end()) {
-                        visited.push_back(arg_inst);
-                        queue.push(arg_inst);
-                    }
+                    enqueue(arg_value.Inst());
                 }
             }
         }
