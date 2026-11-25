@@ -31,12 +31,16 @@ fi
 
 verify_output=$("$bt/apksigner" verify --verbose --print-certs "$apk")
 printf '%s\n' "$verify_output"
-if ! grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' <<<"$verify_output"; then
-    echo 'ERROR: APK signature scheme v2 was not verified' >&2
-    exit 1
-fi
 if ! grep -Fq 'Verified using v3 scheme (APK Signature Scheme v3): true' <<<"$verify_output"; then
     echo 'ERROR: APK signature scheme v3 was not verified' >&2
+    exit 1
+fi
+# apksigner verify only checks the highest scheme needed by manifest minSdk (30 -> v3),
+# so explicitly verify with API 24..27 to confirm the v2 block is also present and valid.
+verify_v2_output=$("$bt/apksigner" verify --min-sdk-version 24 --max-sdk-version 27 --verbose "$apk")
+printf '%s\n' "$verify_v2_output"
+if ! grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' <<<"$verify_v2_output"; then
+    echo 'ERROR: APK signature scheme v2 was not verified' >&2
     exit 1
 fi
 
