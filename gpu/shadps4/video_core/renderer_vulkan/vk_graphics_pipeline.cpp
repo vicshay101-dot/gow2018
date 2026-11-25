@@ -511,7 +511,9 @@ template void GraphicsPipeline::GetVertexInputs(
     VertexInputs<AmdGpu::Buffer>& guest_buffers, u32 step_rate_0, u32 step_rate_1) const;
 
 void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
+    const bool bindless_images = instance.IsBindlessImagesSupported();
     boost::container::small_vector<vk::DescriptorSetLayoutBinding, 32> bindings;
+    boost::container::small_vector<vk::DescriptorBindingFlags, 32> binding_flags;
     u32 binding{};
 
     for (const auto* stage : stages) {
@@ -529,6 +531,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
                 .descriptorCount = 1,
                 .stageFlags = stage_bit,
             });
+            binding_flags.push_back({});
         }
         for (const auto& image : stage->images) {
             const u32 num_bindings = image.NumBindings(*stage);
@@ -539,6 +542,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
                 .descriptorCount = num_bindings,
                 .stageFlags = stage_bit,
             });
+            binding_flags.push_back({});
             binding += num_bindings;
         }
         for (const auto& sampler : stage->samplers) {
@@ -548,13 +552,36 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
                 .descriptorCount = 1,
                 .stageFlags = stage_bit,
             });
+            binding_flags.push_back({});
         }
     }
-    uses_push_descriptors = binding < instance.MaxPushDescriptors();
+    u32 total_descriptors = binding;
+    if (bindless_images) {
+        for (const auto* stage : stages) {
+            if (!stage) {
+                continue;
+            }
+            const auto stage_bit = LogicalStageToStageBit[u32(stage->sw_stage)];
+            bindings.push_back({
+                .binding = binding++,
+                .descriptorType = vk::DescriptorType::eSampledImage,
+                .descriptorCount = 64,
+                .stageFlags = stage_bit,
+            });
+            binding_flags.push_back(vk::DescriptorBindingFlagBits::ePartiallyBound);
+            total_descriptors += 64;
+        }
+    }
+    uses_push_descriptors = total_descriptors < instance.MaxPushDescriptors();
     const auto flags = uses_push_descriptors
                            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
                            : vk::DescriptorSetLayoutCreateFlagBits{};
+    const vk::DescriptorSetLayoutBindingFlagsCreateInfo binding_flags_ci = {
+        .bindingCount = static_cast<u32>(binding_flags.size()),
+        .pBindingFlags = binding_flags.data(),
+    };
     const vk::DescriptorSetLayoutCreateInfo desc_layout_ci = {
+        .pNext = bindless_images ? &binding_flags_ci : nullptr,
         .flags = flags,
         .bindingCount = static_cast<u32>(bindings.size()),
         .pBindings = bindings.data(),
