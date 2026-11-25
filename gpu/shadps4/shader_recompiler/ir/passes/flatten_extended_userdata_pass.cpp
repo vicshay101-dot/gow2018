@@ -826,6 +826,8 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     case IR::Opcode::LogicalOr:
     case IR::Opcode::LogicalXor:
     case IR::Opcode::LogicalNot:
+    case IR::Opcode::Phi:
+    case IR::Opcode::ReadFirstLane:
         return true;
     default:
         return false;
@@ -848,6 +850,12 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
             return true;
         }
         return false;
+    case IR::Opcode::ReadFirstLane:
+        if (inst->Arg(0).IsImmediate()) {
+            c.mov(reg, inst->Arg(0).U32());
+            return true;
+        }
+        return ComputeOffset(c, reg, pass_info, inst->Arg(0));
     case IR::Opcode::IAdd32:
         ABORT_ON_FAILURE(EmitComputeOffsetIAdd32(c, reg, pass_info, inst));
         return true;
@@ -1135,6 +1143,8 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         ABORT_ON_FAILURE(EmitOperand(p, pass_info, inst->Arg(0)));
         p.insert(p.end(), {OpImm, 0u, OpEq});
         return true;
+    case IR::Opcode::ReadFirstLane:
+        return EmitOperand(p, pass_info, inst->Arg(0));
     case IR::Opcode::Phi: {
         // gow3: loop/branch merges cannot be walked statically. Take the first operand that can
         // be computed (the value entering the loop); the loop-carried operand loops back here
@@ -1443,10 +1453,9 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
                 }
                 for (size_t arg = cur->NumArgs(); arg--;) {
                     const IR::Value arg_value = cur->Arg(arg);
-                    if (arg_value.IsImmediate()) {
-                        continue;
+                    if (auto* arg_inst = arg_value.TryInst()) {
+                        enqueue(arg_inst);
                     }
-                    enqueue(arg_value.Inst());
                 }
             }
         }
@@ -1458,13 +1467,17 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
             continue;
         }
 
-        IR::Inst* base = inst->Arg(0).Inst();
-        if (auto* inst = base->Arg(0).TryInst();
-            inst && inst->GetOpcode() == IR::Opcode::ReadFirstLane) {
+        IR::Inst* base = inst->Arg(0).TryInst();
+        if (!base || base->NumArgs() < 2) {
             continue;
         }
-        ASSERT_MSG(IsReadConstSource(base->Arg(0)), "ReadConst base low not from constant memory");
-        ASSERT_MSG(IsReadConstSource(base->Arg(1)), "ReadConst base high not from constant memory");
+        if (auto* base_lo = base->Arg(0).TryInst();
+            base_lo && base_lo->GetOpcode() == IR::Opcode::ReadFirstLane) {
+            continue;
+        }
+        if (!IsReadConstSource(base->Arg(0)) || !IsReadConstSource(base->Arg(1))) {
+            continue;
+        }
 
         IR::Inst* ptr_lo = base->Arg(0).Inst();
         ptr_lo = pass_info.DeduplicateInstruction(ptr_lo);

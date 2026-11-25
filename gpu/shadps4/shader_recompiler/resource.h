@@ -9,10 +9,6 @@
 
 #include <boost/container/static_vector.hpp>
 
-#include <cstdint>
-#include <cstdio>
-#include <unordered_map>
-
 namespace Shader {
 
 static constexpr u32 NUM_USER_DATA_REGS = 16;
