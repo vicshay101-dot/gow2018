@@ -512,6 +512,18 @@ bool Instance::CreateDevice() {
             .shaderSharedInt64Atomics = vk12_features.shaderSharedInt64Atomics,
             .shaderFloat16 = vk12_features.shaderFloat16,
             .shaderInt8 = vk12_features.shaderInt8,
+            // gow3 bindless step 1: descriptor indexing, requested only where the driver reports it.
+            // Declaration order matters for designated initializers (shaderInt8 < these < scalarBlockLayout).
+            .shaderSampledImageArrayNonUniformIndexing =
+                vk12_features.shaderSampledImageArrayNonUniformIndexing,
+            .descriptorBindingSampledImageUpdateAfterBind =
+                vk12_features.descriptorBindingSampledImageUpdateAfterBind,
+            .descriptorBindingUpdateUnusedWhilePending =
+                vk12_features.descriptorBindingUpdateUnusedWhilePending,
+            .descriptorBindingPartiallyBound = vk12_features.descriptorBindingPartiallyBound,
+            .descriptorBindingVariableDescriptorCount =
+                vk12_features.descriptorBindingVariableDescriptorCount,
+            .runtimeDescriptorArray = vk12_features.runtimeDescriptorArray,
             .scalarBlockLayout = vk12_features.scalarBlockLayout,
             .uniformBufferStandardLayout = vk12_features.uniformBufferStandardLayout,
             .separateDepthStencilLayouts = vk12_features.separateDepthStencilLayouts,
