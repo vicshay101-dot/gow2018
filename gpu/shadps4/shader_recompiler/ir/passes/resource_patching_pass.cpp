@@ -1392,6 +1392,23 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
         }
     }
 
+    // The rasterizer reads one table per shader (recipe 0). Recipes that disagree on the table
+    // cannot be served by one array, so the shader keeps the existing per-binding path.
+    if (info.bindless_image_recipes.size() > 1) {
+        const auto& first = info.bindless_image_recipes.front();
+        for (const auto& r : info.bindless_image_recipes) {
+            if (r.table_is_buffer != first.table_is_buffer ||
+                r.table_buf_handle != first.table_buf_handle ||
+                r.table_ptr_lo_dw != first.table_ptr_lo_dw ||
+                r.table_ptr_hi_dw != first.table_ptr_hi_dw ||
+                r.table_base_dw != first.table_base_dw ||
+                r.table_stride_dw != first.table_stride_dw) {
+                info.bindless_image_recipes.clear();
+                break;
+            }
+        }
+    }
+
     // Pass 2: Patch instruction args
     for (const auto& usage : resources) {
         IR::Inst& inst = *usage.user;

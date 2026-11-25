@@ -78,7 +78,7 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
             .stageFlags = vk::ShaderStageFlagBits::eCompute,
         });
         binding_flags.push_back(vk::DescriptorBindingFlagBits::ePartiallyBound);
-        binding += 64;
+        binding += 1;
     }
 
     const vk::PushConstantRange push_constants = {

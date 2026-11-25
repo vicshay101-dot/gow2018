@@ -1930,33 +1930,15 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
                 table_base_addr =
                     (static_cast<u64>(lo) | (static_cast<u64>(hi) << 32)) & 0xFFFFFFFFFFFFULL;
             }
-            for (u32 k = 0; k < 64u; ++k) {
-                bindless_image_infos[k] = vk::DescriptorImageInfo{};
-                if (table_base_addr == 0) {
-                    continue;
-                }
-                const VAddr tsharp_addr =
-                    table_base_addr +
-                    (static_cast<u64>(recipe.table_base_dw) +
-                     static_cast<u64>(k) * static_cast<u64>(recipe.table_stride_dw)) *
-                        4ULL;
-                if (!memory->IsValidGpuMapping(tsharp_addr, sizeof(AmdGpu::Image))) {
-                    continue;
-                }
-                AmdGpu::Image tsharp{};
-                std::memcpy(&tsharp, reinterpret_cast<const void*>(tsharp_addr),
-                            sizeof(AmdGpu::Image));
-                const auto data_fmt = tsharp.GetDataFmt();
-                const auto num_fmt = tsharp.GetNumberFmt();
-                if (tsharp.Address() == 0 || data_fmt == AmdGpu::DataFormat::FormatInvalid ||
-                    !memory->IsValidGpuMapping(tsharp.Address(), 0) ||
-                    !IsKnownFormat(data_fmt, num_fmt)) {
-                    continue;
-                }
+            // Resolves one T# to a view the array can hold. The same path serves the table entries
+            // and the fallback, so an unfilled slot never holds a null descriptor (that needs the
+            // nullDescriptor feature, which is not requested).
+            const auto resolve_view = [&](const AmdGpu::Image& tsharp,
+                                          vk::DescriptorImageInfo& out) -> bool {
                 VideoCore::TextureCache::ImageDesc desc{tsharp, target_image_desc};
                 VideoCore::ImageId image_id = texture_cache.FindImage(desc);
                 if (!image_id) {
-                    continue;
+                    return false;
                 }
                 bound_images.emplace_back(image_id);
                 auto* image = &texture_cache.GetImage(image_id);
@@ -1972,11 +1954,40 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
                     image, new_layout, vk::PipelineStageFlagBits2::eAllCommands,
                     vk::AccessFlagBits2::eShaderRead, desc.view_info.range);
                 image->usage.texture = 1u;
-                bindless_image_infos[k] = vk::DescriptorImageInfo{
+                out = vk::DescriptorImageInfo{
                     .sampler = VK_NULL_HANDLE,
                     .imageView = *image_view.image_view,
                     .imageLayout = image->backing->state.layout,
                 };
+                return true;
+            };
+            // Fallback: the image the shader used before the array existed, from its own T#.
+            vk::DescriptorImageInfo fallback{};
+            const bool has_fallback =
+                resolve_view(target_image_desc.GetSharp(*cs_stage), fallback);
+            for (u32 k = 0; k < 64u; ++k) {
+                vk::DescriptorImageInfo entry{};
+                bool filled = false;
+                if (table_base_addr != 0) {
+                    const VAddr tsharp_addr =
+                        table_base_addr +
+                        (static_cast<u64>(recipe.table_base_dw) +
+                         static_cast<u64>(k) * static_cast<u64>(recipe.table_stride_dw)) *
+                            4ULL;
+                    if (memory->IsValidGpuMapping(tsharp_addr, sizeof(AmdGpu::Image))) {
+                        AmdGpu::Image tsharp{};
+                        std::memcpy(&tsharp, reinterpret_cast<const void*>(tsharp_addr),
+                                    sizeof(AmdGpu::Image));
+                        const auto data_fmt = tsharp.GetDataFmt();
+                        const auto num_fmt = tsharp.GetNumberFmt();
+                        if (tsharp.Address() != 0 && data_fmt != AmdGpu::DataFormat::FormatInvalid &&
+                            memory->IsValidGpuMapping(tsharp.Address(), 0) &&
+                            IsKnownFormat(data_fmt, num_fmt)) {
+                            filled = resolve_view(tsharp, entry);
+                        }
+                    }
+                }
+                bindless_image_infos[k] = (!filled && has_fallback) ? fallback : entry;
             }
             set_writes.push_back(vk::WriteDescriptorSet{
                 .dstSet = VK_NULL_HANDLE,
@@ -1987,7 +1998,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
                 .pImageInfo = bindless_image_infos.data(),
             });
             ++set_write_index;
-            binding.unified += 64;
+            binding.unified += 1;
         }
     } else {
         // gow3: textures on the helper, buffers here. Without mip arrays every stage's
