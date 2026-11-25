@@ -16,7 +16,7 @@ static Id LoadImage(EmitContext& ctx, u32 handle) {
     const u32 image_idx = handle & 0xFFFF;
     const auto& texture = ctx.images[image_idx];
     if (!texture.is_storage && Sirit::ValidId(ctx.bindless_images_id) &&
-        texture.image_type == ctx.bindless_image_type) {
+        texture.image_type.value == ctx.bindless_image_type.value) {
         if (const auto* recipe = ctx.info.FindBindlessImageRecipe(image_idx)) {
             static std::mutex log_mutex;
             static std::unordered_set<u64> logged_pgms;
