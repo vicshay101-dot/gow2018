@@ -329,6 +329,259 @@ static void LogSharpRecipe(const SharpReference& sharp, const ImageResource& ima
                 unsupported.empty() ? "-" : unsupported.c_str());
 }
 
+static bool IsBindlessComputeTarget(u64 pgm_hash) {
+    switch (pgm_hash) {
+    case 0x000000002e168c7aULL:
+    case 0x000000002fedcaefULL:
+    case 0x0000000071b3a264ULL:
+    case 0x0000000086e50a98ULL:
+    case 0x0000000091f23774ULL:
+    case 0x00000000939f6bcfULL:
+    case 0x000000009914ae38ULL:
+    case 0x00000000e775482aULL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+struct PendingBindlessRecipe {
+    Info::BindlessImageRecipe recipe;
+    const IR::Inst* r_inst{};
+    const IR::Inst* index_inst{};
+    const IR::Inst* table_buf_inst{};
+};
+
+static const IR::Inst* UnwrapPhiInst(const IR::Value& value) {
+    const IR::Inst* inst = value.TryInst();
+    for (int hops = 0; inst && inst->GetOpcode() == IR::Opcode::Phi && hops < 8; ++hops) {
+        if (inst->NumArgs() == 0) {
+            return nullptr;
+        }
+        inst = inst->Arg(0).TryInst();
+    }
+    return inst;
+}
+
+static bool MatchCommutativeImm(const IR::Inst* inst, IR::Opcode op, IR::Value& out_other,
+                                u32& out_imm) {
+    if (!inst || inst->GetOpcode() != op || inst->NumArgs() < 2) {
+        return false;
+    }
+    const IR::Value a0 = inst->Arg(0);
+    const IR::Value a1 = inst->Arg(1);
+    if (a1.IsImmediate() && a1.Type() == IR::Type::U32) {
+        out_other = a0;
+        out_imm = a1.U32();
+        return true;
+    }
+    if (a0.IsImmediate() && a0.Type() == IR::Type::U32) {
+        out_other = a1;
+        out_imm = a0.U32();
+        return true;
+    }
+    return false;
+}
+
+static bool MatchRWAdd(const IR::Inst* add1, const IR::Inst*& out_r, u32& out_r_offset,
+                       u32& out_wg_comp) {
+    if (!add1 || add1->GetOpcode() != IR::Opcode::IAdd32 || add1->NumArgs() < 2) {
+        return false;
+    }
+    const IR::Inst* lhs = UnwrapPhiInst(add1->Arg(0));
+    const IR::Inst* rhs = UnwrapPhiInst(add1->Arg(1));
+    if (!lhs || !rhs) {
+        return false;
+    }
+    auto check_pair = [&](const IR::Inst* r_cand, const IR::Inst* w_cand) -> bool {
+        if (r_cand->GetOpcode() != IR::Opcode::ReadConstBuffer || r_cand->NumArgs() < 2) {
+            return false;
+        }
+        if (!r_cand->Arg(1).IsImmediate() || r_cand->Arg(1).Type() != IR::Type::U32) {
+            return false;
+        }
+        if (w_cand->GetOpcode() != IR::Opcode::GetAttributeU32 || w_cand->NumArgs() < 2) {
+            return false;
+        }
+        if (!w_cand->Arg(0).IsImmediate() ||
+            w_cand->Arg(0).Attribute() != IR::Attribute::WorkgroupId) {
+            return false;
+        }
+        if (!w_cand->Arg(1).IsImmediate() || w_cand->Arg(1).Type() != IR::Type::U32) {
+            return false;
+        }
+        out_r = r_cand;
+        out_r_offset = r_cand->Arg(1).U32();
+        out_wg_comp = w_cand->Arg(1).U32();
+        return true;
+    };
+    return check_pair(lhs, rhs) || check_pair(rhs, lhs);
+}
+
+static bool TryMatchIndexChain(const IR::Inst* inst, PendingBindlessRecipe& out) {
+    if (!inst || inst->GetOpcode() != IR::Opcode::ShiftRightLogical32 || inst->NumArgs() < 2) {
+        return false;
+    }
+    if (!inst->Arg(1).IsImmediate() || inst->Arg(1).Type() != IR::Type::U32) {
+        return false;
+    }
+    const u32 s = inst->Arg(1).U32();
+
+    IR::Value add2_val;
+    u32 m2 = 0;
+    if (!MatchCommutativeImm(UnwrapPhiInst(inst->Arg(0)), IR::Opcode::IMul32, add2_val, m2)) {
+        return false;
+    }
+
+    IR::Value mul1_val;
+    u32 c2 = 0;
+    if (!MatchCommutativeImm(UnwrapPhiInst(add2_val), IR::Opcode::IAdd32, mul1_val, c2)) {
+        return false;
+    }
+
+    IR::Value add1_val;
+    u32 m1 = 0;
+    if (!MatchCommutativeImm(UnwrapPhiInst(mul1_val), IR::Opcode::IMul32, add1_val, m1)) {
+        return false;
+    }
+
+    const IR::Inst* r_inst = nullptr;
+    u32 r_offset = 0;
+    u32 wg_comp = 0;
+    if (!MatchRWAdd(UnwrapPhiInst(add1_val), r_inst, r_offset, wg_comp)) {
+        return false;
+    }
+
+    out.r_inst = r_inst;
+    out.index_inst = inst;
+    out.recipe.r_offset = r_offset;
+    out.recipe.workgroup_comp = wg_comp;
+    out.recipe.m1 = m1;
+    out.recipe.c2 = c2;
+    out.recipe.m2 = m2;
+    out.recipe.s = s;
+    return true;
+}
+
+static bool FindIndexChainInValue(const IR::Value& value, int depth, u32& budget,
+                                  PendingBindlessRecipe& out) {
+    if (depth <= 0 || budget == 0 || value.IsImmediate()) {
+        return false;
+    }
+    const IR::Inst* inst = value.TryInst();
+    if (!inst) {
+        return false;
+    }
+    --budget;
+    if (TryMatchIndexChain(inst, out)) {
+        return true;
+    }
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        if (FindIndexChainInValue(inst->Arg(i), depth - 1, budget, out)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool EvalDwordOffsetWithIndex(const IR::Value& value, const IR::Inst* index_inst,
+                                     u32 index_val, int depth, u32& out_val) {
+    if (depth <= 0) {
+        return false;
+    }
+    if (value.IsImmediate()) {
+        if (value.Type() != IR::Type::U32) {
+            return false;
+        }
+        out_val = value.U32();
+        return true;
+    }
+    const IR::Inst* inst = UnwrapPhiInst(value);
+    if (!inst) {
+        return false;
+    }
+    if (inst == index_inst) {
+        out_val = index_val;
+        return true;
+    }
+    if (inst->NumArgs() < 2) {
+        return false;
+    }
+    u32 a = 0;
+    u32 b = 0;
+    if (!EvalDwordOffsetWithIndex(inst->Arg(0), index_inst, index_val, depth - 1, a) ||
+        !EvalDwordOffsetWithIndex(inst->Arg(1), index_inst, index_val, depth - 1, b)) {
+        return false;
+    }
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::IAdd32:
+        out_val = a + b;
+        return true;
+    case IR::Opcode::ISub32:
+        out_val = a - b;
+        return true;
+    case IR::Opcode::IMul32:
+        out_val = a * b;
+        return true;
+    case IR::Opcode::ShiftLeftLogical32:
+        out_val = (b < 32) ? (a << b) : 0u;
+        return true;
+    case IR::Opcode::ShiftRightLogical32:
+        out_val = (b < 32) ? (a >> b) : 0u;
+        return true;
+    case IR::Opcode::BitwiseAnd32:
+        out_val = a & b;
+        return true;
+    case IR::Opcode::BitwiseOr32:
+        out_val = a | b;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool ExtractTableAddressing(const IR::Value& dw0_val, PendingBindlessRecipe& pending) {
+    const IR::Inst* dw0 = UnwrapPhiInst(dw0_val);
+    if (!dw0 || dw0->NumArgs() < 2) {
+        return false;
+    }
+    u32 off0 = 0;
+    u32 off1 = 0;
+    if (!EvalDwordOffsetWithIndex(dw0->Arg(1), pending.index_inst, 0, 16, off0) ||
+        !EvalDwordOffsetWithIndex(dw0->Arg(1), pending.index_inst, 1, 16, off1)) {
+        return false;
+    }
+    pending.recipe.table_base_dw = off0;
+    pending.recipe.table_stride_dw = off1 - off0;
+    if (dw0->GetOpcode() == IR::Opcode::ReadConstBuffer) {
+        pending.recipe.table_is_buffer = true;
+        pending.table_buf_inst = dw0;
+        return true;
+    }
+    if (dw0->GetOpcode() == IR::Opcode::ReadConst) {
+        const IR::Inst* base_inst = UnwrapPhiInst(dw0->Arg(0));
+        if (!base_inst || base_inst->GetOpcode() != IR::Opcode::CompositeConstructU32x2 ||
+            base_inst->NumArgs() < 2) {
+            return false;
+        }
+        const IR::Inst* lo_inst = UnwrapPhiInst(base_inst->Arg(0));
+        const IR::Inst* hi_inst = UnwrapPhiInst(base_inst->Arg(1));
+        if (!lo_inst || !hi_inst) {
+            return false;
+        }
+        const SharpLocation lo_loc = SharpLocationFromSource(lo_inst);
+        const SharpLocation hi_loc = SharpLocationFromSource(hi_inst);
+        if (lo_loc == UNKNOWN_LOCATION || hi_loc == UNKNOWN_LOCATION) {
+            return false;
+        }
+        pending.recipe.table_is_buffer = false;
+        pending.recipe.table_ptr_lo_dw = lo_loc;
+        pending.recipe.table_ptr_hi_dw = hi_loc;
+        return true;
+    }
+    return false;
+}
+
 void PatchBufferSharp(const ResourceDiscovery& resource, Info& info, Descriptors& descriptors,
                       const Profile& profile) {
     IR::Inst& inst = *resource.user;
@@ -350,7 +603,7 @@ void PatchBufferSharp(const ResourceDiscovery& resource, Info& info, Descriptors
 }
 
 void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors& descriptors,
-                     const Profile& profile) {
+                     const Profile& profile, std::vector<PendingBindlessRecipe>& pending_bindless) {
     IR::Inst& inst = *resource.user;
 
     // Read image sharp.
@@ -451,6 +704,20 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
     }
 
     u32 image_binding = descriptors.Add(image_res);
+
+    if (profile.supports_bindless_images && IsBindlessComputeTarget(info.pgm_hash) &&
+        !image_res.is_written) {
+        for (u32 i = 0; i < resource.sharps[0].num_dwords; ++i) {
+            PendingBindlessRecipe pending{};
+            u32 budget = 4096;
+            if (FindIndexChainInValue(resource.sharps[0].dwords[i], 32, budget, pending) &&
+                ExtractTableAddressing(resource.sharps[0].dwords[0], pending)) {
+                pending.recipe.image_binding = image_binding;
+                pending_bindless.push_back(pending);
+                break;
+            }
+        }
+    }
 
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
 
@@ -1097,12 +1364,31 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
     // Iterate over discovered resources and patch them after finding the sharp.
     // Pass 1: Track resource sharps
     Descriptors descriptors{info};
+    std::vector<PendingBindlessRecipe> pending_bindless;
     for (const auto& usage : resources) {
         IR::Inst& inst = *usage.user;
         if (IsBufferInstruction(inst)) {
             PatchBufferSharp(usage, info, descriptors, profile);
         } else if (IsImageInstruction(inst)) {
-            PatchImageSharp(usage, info, descriptors, profile);
+            PatchImageSharp(usage, info, descriptors, profile, pending_bindless);
+        }
+    }
+    for (auto& pending : pending_bindless) {
+        if (pending.r_inst && pending.r_inst->Arg(0).IsImmediate() &&
+            pending.r_inst->Arg(0).Type() == IR::Type::U32) {
+            pending.recipe.r_buffer_handle = pending.r_inst->Arg(0).U32();
+            if (pending.recipe.table_is_buffer) {
+                if (!pending.table_buf_inst || !pending.table_buf_inst->Arg(0).IsImmediate() ||
+                    pending.table_buf_inst->Arg(0).Type() != IR::Type::U32) {
+                    continue;
+                }
+                pending.recipe.table_buf_handle = pending.table_buf_inst->Arg(0).U32();
+            }
+            pending.recipe.valid = true;
+            if (!info.FindBindlessImageRecipe(pending.recipe.image_binding)) {
+                info.bindless_image_recipes.push_back(pending.recipe);
+            }
+            info.loads.Set(IR::Attribute::WorkgroupId, pending.recipe.workgroup_comp);
         }
     }
 

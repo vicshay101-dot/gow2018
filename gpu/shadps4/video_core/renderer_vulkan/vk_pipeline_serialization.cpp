@@ -32,8 +32,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 16u; // gow3: stage A recipe diagnostic (forces recompile so SHARP_RECIPE is emitted)
-static constexpr u32 ShaderMetaVersion = 16u; // gow3: stage A recipe diagnostic (forces recompile so SHARP_RECIPE is emitted)
+static constexpr u32 ShaderBinaryVersion = 17u; // gow3: stage 2a-ii bindless compute images
+static constexpr u32 ShaderMetaVersion = 17u; // gow3: stage 2a-ii bindless compute images
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 
@@ -1366,6 +1366,10 @@ void Info::Serialize(Serialization::Archive& ar) const {
 
     info.Write(this, sizeof(InfoPersistent));
     info.Write(flattened_ud_buf);
+    info.Write(static_cast<u32>(bindless_image_recipes.size()));
+    for (const auto& recipe : bindless_image_recipes) {
+        info.Write(&recipe, sizeof(recipe));
+    }
     srt_info.Serialize(ar);
 }
 
@@ -1374,6 +1378,12 @@ bool Info::Deserialize(Serialization::Archive& ar) {
 
     info.Read(this, sizeof(Shader::InfoPersistent));
     info.Read(flattened_ud_buf);
+    u32 num_bindless{};
+    info.Read(num_bindless);
+    bindless_image_recipes.resize(num_bindless);
+    for (u32 i = 0; i < num_bindless; ++i) {
+        info.Read(&bindless_image_recipes[i], sizeof(BindlessImageRecipe));
+    }
 
     return srt_info.Deserialize(ar);
 }

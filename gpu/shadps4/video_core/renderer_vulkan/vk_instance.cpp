@@ -994,4 +994,14 @@ vk::Format Instance::GetSupportedFormat(const vk::Format format,
     return format;
 }
 
+bool Instance::IsBindlessImagesSupported() const {
+    static const bool enabled = [] {
+        const char* env = std::getenv("GOW3_BINDLESS_IMAGES");
+        return !env || std::string_view{env} != "0";
+    }();
+    return enabled && vk12_features.runtimeDescriptorArray &&
+           vk12_features.shaderSampledImageArrayNonUniformIndexing &&
+           vk12_features.descriptorBindingPartiallyBound;
+}
+
 } // namespace Vulkan

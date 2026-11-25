@@ -572,7 +572,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
             total_descriptors += 64;
         }
     }
-    uses_push_descriptors = total_descriptors < instance.MaxPushDescriptors();
+    uses_push_descriptors = !bindless_images && total_descriptors < instance.MaxPushDescriptors();
     const auto flags = uses_push_descriptors
                            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
                            : vk::DescriptorSetLayoutCreateFlagBits{};

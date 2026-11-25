@@ -1049,18 +1049,34 @@ void EmitContext::DefineImagesAndSamplers() {
         image_u32 = TypePointer(spv::StorageClass::Image, U32[1]);
         image_f32 = TypePointer(spv::StorageClass::Image, F32[1]);
     }
-    if (info.samplers.empty()) {
-        return;
+    if (!info.samplers.empty()) {
+        sampler_type = TypeSampler();
+        sampler_pointer_type = TypePointer(spv::StorageClass::UniformConstant, sampler_type);
+        for (const auto& samp_desc : info.samplers) {
+            const Id id{AddGlobalVariable(sampler_pointer_type, spv::StorageClass::UniformConstant)};
+            Decorate(id, spv::Decoration::Binding, binding.unified++);
+            Decorate(id, spv::Decoration::DescriptorSet, 0U);
+            Name(id, fmt::format("{}_{}{}", hw_stage, "samp", samplers.size()));
+            samplers.push_back(id);
+            interfaces.push_back(id);
+        }
     }
-    sampler_type = TypeSampler();
-    sampler_pointer_type = TypePointer(spv::StorageClass::UniformConstant, sampler_type);
-    for (const auto& samp_desc : info.samplers) {
-        const Id id{AddGlobalVariable(sampler_pointer_type, spv::StorageClass::UniformConstant)};
-        Decorate(id, spv::Decoration::Binding, binding.unified++);
-        Decorate(id, spv::Decoration::DescriptorSet, 0U);
-        Name(id, fmt::format("{}_{}{}", hw_stage, "samp", samplers.size()));
-        samplers.push_back(id);
-        interfaces.push_back(id);
+    if (profile.supports_bindless_images && !info.bindless_image_recipes.empty()) {
+        for (const auto& recipe : info.bindless_image_recipes) {
+            if (recipe.image_binding < images.size() && !images[recipe.image_binding].is_storage) {
+                bindless_image_type = images[recipe.image_binding].image_type;
+                break;
+            }
+        }
+        if (Sirit::ValidId(bindless_image_type)) {
+            const Id array_type = TypeArray(bindless_image_type, ConstU32(64u));
+            const Id pointer_type = TypePointer(spv::StorageClass::UniformConstant, array_type);
+            bindless_images_id = AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant);
+            Decorate(bindless_images_id, spv::Decoration::Binding, binding.unified++);
+            Decorate(bindless_images_id, spv::Decoration::DescriptorSet, 0U);
+            Name(bindless_images_id, fmt::format("{}_bindless_imgs", hw_stage));
+            interfaces.push_back(bindless_images_id);
+        }
     }
 }
 

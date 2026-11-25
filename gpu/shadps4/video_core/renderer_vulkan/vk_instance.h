@@ -321,11 +321,7 @@ public:
     }
 
     /// Returns true when bindless sampled image arrays with non-uniform indexing are supported.
-    bool IsBindlessImagesSupported() const {
-        return vk12_features.runtimeDescriptorArray &&
-               vk12_features.shaderSampledImageArrayNonUniformIndexing &&
-               vk12_features.descriptorBindingPartiallyBound;
-    }
+    bool IsBindlessImagesSupported() const;
 
     /// Returns the vendor ID of the physical device
     u32 GetVendorID() const {

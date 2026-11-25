@@ -1902,10 +1902,12 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     push_data = MakeUserData(Regs());
     if (!HelperEligible(pipeline)) {
         ++helper_serial;
+        const Shader::Info* cs_stage = nullptr;
         for (const auto* stage : pipeline->GetStages()) {
             if (!stage) {
                 continue;
             }
+            cs_stage = stage;
             set_writes.resize(set_writes.size() + stage->buffers.size() + stage->images.size() +
                               stage->samplers.size());
             stage->PushUd(binding, push_data);
@@ -1913,6 +1915,79 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
             BindBuffers(*stage, prepared, binding, push_data, set_write_index);
             BindTextures(*stage, prepared, binding, set_write_index, needs_barrier);
             uses_dma |= stage->uses_dma;
+        }
+        if (pipeline->IsCompute() && instance.IsBindlessImagesSupported() && cs_stage &&
+            !cs_stage->bindless_image_recipes.empty()) {
+            const auto& recipe = cs_stage->bindless_image_recipes[0];
+            const auto& target_image_desc = cs_stage->images[recipe.image_binding];
+            VAddr table_base_addr = 0;
+            if (recipe.table_is_buffer) {
+                const auto buf = cs_stage->buffers[recipe.table_buf_handle].GetSharp(*cs_stage);
+                table_base_addr = buf.base_address;
+            } else {
+                const u32 lo = cs_stage->ReadUdSharp<u32>(recipe.table_ptr_lo_dw);
+                const u32 hi = cs_stage->ReadUdSharp<u32>(recipe.table_ptr_hi_dw);
+                table_base_addr =
+                    (static_cast<u64>(lo) | (static_cast<u64>(hi) << 32)) & 0xFFFFFFFFFFFFULL;
+            }
+            for (u32 k = 0; k < 64u; ++k) {
+                bindless_image_infos[k] = vk::DescriptorImageInfo{};
+                if (table_base_addr == 0) {
+                    continue;
+                }
+                const VAddr tsharp_addr =
+                    table_base_addr +
+                    (static_cast<u64>(recipe.table_base_dw) +
+                     static_cast<u64>(k) * static_cast<u64>(recipe.table_stride_dw)) *
+                        4ULL;
+                if (!memory->IsValidGpuMapping(tsharp_addr, sizeof(AmdGpu::Image))) {
+                    continue;
+                }
+                AmdGpu::Image tsharp{};
+                std::memcpy(&tsharp, reinterpret_cast<const void*>(tsharp_addr),
+                            sizeof(AmdGpu::Image));
+                const auto data_fmt = tsharp.GetDataFmt();
+                const auto num_fmt = tsharp.GetNumberFmt();
+                if (tsharp.Address() == 0 || data_fmt == AmdGpu::DataFormat::FormatInvalid ||
+                    !memory->IsValidGpuMapping(tsharp.Address(), 0) ||
+                    !IsKnownFormat(data_fmt, num_fmt)) {
+                    continue;
+                }
+                VideoCore::TextureCache::ImageDesc desc{tsharp, target_image_desc};
+                VideoCore::ImageId image_id = texture_cache.FindImage(desc);
+                if (!image_id) {
+                    continue;
+                }
+                bound_images.emplace_back(image_id);
+                auto* image = &texture_cache.GetImage(image_id);
+                if (auto depth_image_id = texture_cache.GetAssociatedDepth(*image)) {
+                    image_id = depth_image_id;
+                    image = &texture_cache.GetImage(image_id);
+                }
+                auto& image_view = texture_cache.FindTexture(image_id, desc, nullptr, true);
+                const auto new_layout = image->info.props.is_depth
+                                            ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
+                                            : vk::ImageLayout::eShaderReadOnlyOptimal;
+                needs_barrier |= runtime.Transit(
+                    image, new_layout, vk::PipelineStageFlagBits2::eAllCommands,
+                    vk::AccessFlagBits2::eShaderRead, desc.view_info.range);
+                image->usage.texture = 1u;
+                bindless_image_infos[k] = vk::DescriptorImageInfo{
+                    .sampler = VK_NULL_HANDLE,
+                    .imageView = *image_view.image_view,
+                    .imageLayout = image->backing->state.layout,
+                };
+            }
+            set_writes.push_back(vk::WriteDescriptorSet{
+                .dstSet = VK_NULL_HANDLE,
+                .dstBinding = binding.unified,
+                .dstArrayElement = 0,
+                .descriptorCount = 64,
+                .descriptorType = vk::DescriptorType::eSampledImage,
+                .pImageInfo = bindless_image_infos.data(),
+            });
+            ++set_write_index;
+            binding.unified += 64;
         }
     } else {
         // gow3: textures on the helper, buffers here. Without mip arrays every stage's

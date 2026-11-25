@@ -294,6 +294,8 @@ public:
     Id subgroup_lt_mask{};
     Id image_u32{};
     Id image_f32{};
+    Id bindless_images_id{};
+    Id bindless_image_type{};
 
     Id shared_memory_u16{};
     Id shared_memory_u32{};
