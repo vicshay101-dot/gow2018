@@ -140,7 +140,7 @@ def derive(game, config, state_path, env):
         updates['GOW3_ASYNC_BUFFER_READBACK'] = env.get('GOW3_ASYNC_BUFFER_READBACK', '1')
         updates['GOW3_ADPF'] = env.get('GOW3_ADPF', '1')
         updates['GOW3_DRAW_PIPE'] = env.get('GOW3_DRAW_PIPE', '0')
-        updates['GOW3_COALESCE_COMPUTE_BARRIERS'] = env.get('GOW3_COALESCE_COMPUTE_BARRIERS', '0')
+        updates['GOW3_COALESCE_COMPUTE_BARRIERS'] = env.get('GOW3_COALESCE_COMPUTE_BARRIERS', '1')
         updates['GOW3_DEFERRED_READBACK'] = '0'
         updates['GOW3_STALE_READBACK'] = '0'
         updates['GOW3_READBACK_LINEAR'] = '0'

@@ -54,15 +54,17 @@ export GOW3_PRESENT_SOCKET="$base/present.sock"
 # The game shows its frames through the app's present bridge, which creates this socket only while the
 # app is running. Without it the game waits for the socket and looks frozen, so wait a bounded time and
 # stop with a clear message instead. Launched from the app, the bridge is already up and this passes.
-present_wait=${GOW3_PRESENT_WAIT:-20}
-present_i=0
-while [ ! -S "$GOW3_PRESENT_SOCKET" ] && [ "$present_i" -lt "$present_wait" ]; do
-    sleep 1
-    present_i=$((present_i + 1))
-done
-if [ ! -S "$GOW3_PRESENT_SOCKET" ]; then
-    echo "present: $GOW3_PRESENT_SOCKET nao existe. Abra o God of War (2018) no app, deixe a tela do jogo em primeiro plano e so entao rode o jogo." >&2
-    exit 1
+if [ "${1:-game}" != vulkan ]; then
+    present_wait=${GOW3_PRESENT_WAIT:-20}
+    present_i=0
+    while [ ! -S "$GOW3_PRESENT_SOCKET" ] && [ "$present_i" -lt "$present_wait" ]; do
+        sleep 1
+        present_i=$((present_i + 1))
+    done
+    if [ ! -S "$GOW3_PRESENT_SOCKET" ]; then
+        echo "present: $GOW3_PRESENT_SOCKET nao existe. Abra o God of War (2018) no app, deixe a tela do jogo em primeiro plano e so entao rode o jogo." >&2
+        exit 1
+    fi
 fi
 
 # ==============================================================================
@@ -97,7 +99,7 @@ mkdir -p "$MESA_SHADER_CACHE_DIR"
 unset GOW3_RENDER_RES GOW3_SCENE_SCALE GOW3_STREAM_MEMORY
 export GOW3_READBACKS=${GOW3_READBACKS:-1}
 export GOW3_PREP_WORKERS=${GOW3_PREP_WORKERS:-2}
-export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-1}
+export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-0}
 
 # Performance report every 5 s in the log
 if [ -e /sdcard/Download/gow2018_no_frame_stats ]; then unset GOW3_FRAME_STATS
@@ -153,13 +155,13 @@ if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow
     export GOW3_ASYNC_BUFFER_READBACK=${GOW3_ASYNC_BUFFER_READBACK:-1}
     export GOW3_ADPF=${GOW3_ADPF:-1}
     export GOW3_DRAW_PIPE=${GOW3_DRAW_PIPE:-0}
-    export GOW3_COALESCE_COMPUTE_BARRIERS=${GOW3_COALESCE_COMPUTE_BARRIERS:-0}
+    export GOW3_COALESCE_COMPUTE_BARRIERS=${GOW3_COALESCE_COMPUTE_BARRIERS:-1}
     export GOW3_READBACK_LINEAR=${GOW3_READBACK_LINEAR:-0}
     export GOW3_DEFERRED_READBACK=${GOW3_DEFERRED_READBACK:-0}
     export GOW3_STALE_READBACK=${GOW3_STALE_READBACK:-0}
     export GOW3_HOT_PAGES=${GOW3_HOT_PAGES:-0}
     export GOW3_PREP_WORKERS=${GOW3_PREP_WORKERS:-2}
-    export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-1}
+    export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-0}
     export GOW3_FAULT_WINDOW=${GOW3_FAULT_WINDOW:-1024}
     export GOW3_COPY_GPU_BUFFERS=${GOW3_COPY_GPU_BUFFERS:-1}
     export GOW3_ASYNC_SHADERS=${GOW3_ASYNC_SHADERS:-1}

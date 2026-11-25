@@ -630,6 +630,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     const bool is_meta = !is_written && texture_cache.GetMetaInfo(device_addr).has_value();
     if (!is_written && !is_meta && size <= STREAM_THRESHOLD &&
         !IsRegionGpuModified(device_addr, size)) {
+        bool promote_to_arena = false;
         // If this small read-only buffer is already resident and clean in the GPU arena,
         // bind the arena directly to avoid thousands of redundant CPU memcpy calls per frame
         // without causing any upload or renderpass break.
@@ -646,32 +647,91 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                 }
                 return {fast_arena, fast_arena->Offset(device_addr)};
             }
-        }
-        if (stats) {
-            auto& region = Stats().regions[RegionKey(device_addr)];
-            ++region.stream_count;
-            region.stream_bytes += size;
-        }
-        // gow3: the guest data is copied on a copy thread, started now; submission and
-        // guest-visible fences wait for it (Scheduler::WaitHostCopies).
-        if (!stream_buffer.mapped_data.empty() &&
-            !Gow3Toggle::Disabled(Gow3Toggle::DeferredStreamCopies)) {
-            if (const auto offset = stream_buffer.Reserve(size, instance.UniformMinAlignment())) {
-                SmallGuestCopy({
-                    .run = &RunGuestCopy,
-                    .context = this,
-                    .source = device_addr,
-                    .destination = reinterpret_cast<u64>(stream_buffer.mapped_data.data() + *offset),
-                    .size = size,
-                    .extra = reinterpret_cast<u64>(static_cast<Buffer*>(&stream_buffer)),
-                });
-                return {&stream_buffer, *offset};
+            static const bool promote_static = [] {
+                const char* env = std::getenv("GOW3_PROMOTE_STATIC_BUFFERS");
+                return !env || env[0] != '0';
+            }();
+            if (promote_static && size > 0) {
+                constexpr u16 PromoteThreshold = 16u;
+                constexpr u32 MaxPromotionsPerFrame = 32u;
+                const u64 first_page = device_addr >> 12;
+                const u64 last_page = (device_addr + size - 1) >> 12;
+                bool any_volatile = false;
+                bool ready = true;
+                for (u64 page = first_page; page <= last_page; ++page) {
+                    const size_t idx =
+                        static_cast<size_t>((page * 0x9E3779B97F4A7C15ULL) >> 50) &
+                        (STATIC_PROMO_SLOTS - 1);
+                    auto& slot = static_promo_table[idx];
+                    if (slot.page != page) {
+                        slot = StaticPromoSlot{.page = page, .hits = 1, .state = 0};
+                        ready = false;
+                    } else if (slot.state == 2) {
+                        any_volatile = true;
+                        ready = false;
+                    } else if (slot.state == 1) {
+                        if (IsRegionCpuModified(page << 12, 4096)) {
+                            slot.state = 2;
+                            any_volatile = true;
+                            ready = false;
+                        }
+                    } else {
+                        if (slot.hits < PromoteThreshold) {
+                            ++slot.hits;
+                        }
+                        if (slot.hits < PromoteThreshold) {
+                            ready = false;
+                        }
+                    }
+                }
+                if (ready && !any_volatile) {
+                    const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
+                    if (frame != promo_frame) {
+                        promo_frame = frame;
+                        promo_frame_count = 0;
+                    }
+                    if (promo_frame_count < MaxPromotionsPerFrame) {
+                        ++promo_frame_count;
+                        for (u64 page = first_page; page <= last_page; ++page) {
+                            const size_t idx =
+                                static_cast<size_t>((page * 0x9E3779B97F4A7C15ULL) >> 50) &
+                                (STATIC_PROMO_SLOTS - 1);
+                            static_promo_table[idx].state = 1;
+                        }
+                        promote_to_arena = true;
+                    }
+                }
             }
         }
-        const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
-        memory->CopySparseMemory(device_addr, data, size);
-        stream_buffer.Commit();
-        return {&stream_buffer, offset};
+        if (!promote_to_arena) {
+            if (stats) {
+                auto& region = Stats().regions[RegionKey(device_addr)];
+                ++region.stream_count;
+                region.stream_bytes += size;
+            }
+            // gow3: the guest data is copied on a copy thread, started now; submission and
+            // guest-visible fences wait for it (Scheduler::WaitHostCopies).
+            if (!stream_buffer.mapped_data.empty() &&
+                !Gow3Toggle::Disabled(Gow3Toggle::DeferredStreamCopies)) {
+                if (const auto offset =
+                        stream_buffer.Reserve(size, instance.UniformMinAlignment())) {
+                    SmallGuestCopy({
+                        .run = &RunGuestCopy,
+                        .context = this,
+                        .source = device_addr,
+                        .destination =
+                            reinterpret_cast<u64>(stream_buffer.mapped_data.data() + *offset),
+                        .size = size,
+                        .extra = reinterpret_cast<u64>(static_cast<Buffer*>(&stream_buffer)),
+                    });
+                    return {&stream_buffer, *offset};
+                }
+            }
+            const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
+            memory->CopySparseMemory(device_addr, data, size);
+            stream_buffer.Commit();
+            return {&stream_buffer, offset};
+        }
     }
     const u64 first_block = device_addr >> block_shift;
     const u64 last_block = (device_addr + size - 1) >> block_shift;
