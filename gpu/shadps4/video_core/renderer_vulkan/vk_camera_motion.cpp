@@ -58,7 +58,10 @@ CameraMotion::CameraMotion(const Instance& instance_, Scheduler& scheduler_,
     const char* upscaler = std::getenv("GOW3_UPSCALER");
     // The upscaler can be switched on from the menu at any time: the camera is always tracked
     // unless GOW3_UPSCALER=none.
-    for_upscaler = !(upscaler && std::strcmp(upscaler, "none") == 0);
+    // perf: the Android port never enables the upscaler (vk_temporal_upscaler.cpp), so tracking the
+    // camera there only adds per-draw work on every G-buffer draw.
+    for_upscaler = !std::getenv("GOW3_ANDROID_PORT") &&
+                   !(upscaler && std::strcmp(upscaler, "none") == 0);
     const auto device = instance.GetDevice();
     if (for_upscaler) {
         const std::array<vk::DescriptorSetLayoutBinding, 3> motion_bindings = {{
