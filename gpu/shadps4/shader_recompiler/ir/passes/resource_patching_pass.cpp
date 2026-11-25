@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
 #include <string>
+#include <vector>
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
 #include "shader_recompiler/ir/breadth_first_search.h"
@@ -201,6 +203,11 @@ SharpFetch<T> ConstructSharpFetch(const SharpReference& sharp) {
 
 // gow3 stage A diagnostic: can a T# whose offsets are not statically known be described by a
 // recipe built from the IR that defines its dwords? Reports only. Nothing is bound differently.
+// Phis currently being expanded on this path. Seeing one again means a loop feeds the value back.
+static thread_local std::vector<const IR::Inst*> g_recipe_phi_path;
+// Node budget per dword, so shared Phi subtrees cannot blow up compile time.
+static thread_local u32 g_recipe_budget = 0;
+
 // Builds a structural signature of the recipe that defines a dword. A Phi is accepted only when all
 // its operands produce the same signature, so the value does not depend on which path runs.
 static bool RecipeSig(const IR::Value& value, int depth, std::string& sig, std::string& unsupported) {
@@ -221,22 +228,37 @@ static bool RecipeSig(const IR::Value& value, int depth, std::string& sig, std::
         unsupported = "depth";
         return false;
     }
+    if (g_recipe_budget == 0) {
+        unsupported = "budget";
+        return false;
+    }
+    --g_recipe_budget;
     const IR::Opcode op = inst->GetOpcode();
     if (op == IR::Opcode::GetUserData) {
         sig += "GUD(";
     } else if (op == IR::Opcode::Phi) {
+        if (std::find(g_recipe_phi_path.begin(), g_recipe_phi_path.end(), inst) !=
+            g_recipe_phi_path.end()) {
+            unsupported = "Phi-cycle";
+            return false;
+        }
+        g_recipe_phi_path.push_back(inst);
         std::string first;
-        for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        bool ok = true;
+        for (size_t i = 0; i < inst->NumArgs() && ok; ++i) {
             std::string branch;
             if (!RecipeSig(inst->Arg(i), depth - 1, branch, unsupported)) {
-                return false;
-            }
-            if (i == 0) {
+                ok = false;
+            } else if (i == 0) {
                 first = branch;
             } else if (branch != first) {
                 unsupported = "Phi-divergent";
-                return false;
+                ok = false;
             }
+        }
+        g_recipe_phi_path.pop_back();
+        if (!ok) {
+            return false;
         }
         sig += first;
         return true;
@@ -275,6 +297,8 @@ static bool RecipeSig(const IR::Value& value, int depth, std::string& sig, std::
 
 static bool SharpRecipeSupported(const IR::Value& value, int depth, std::string& unsupported) {
     std::string sig;
+    g_recipe_budget = 4096;
+    g_recipe_phi_path.clear();
     return RecipeSig(value, depth, sig, unsupported);
 }
 
@@ -293,7 +317,7 @@ static void LogSharpRecipe(const SharpReference& sharp, const ImageResource& ima
     std::string unsupported;
     bool supported = true;
     for (u32 i = 0; i < sharp.num_dwords && supported; ++i) {
-        supported = SharpRecipeSupported(sharp.dwords[i], 8, unsupported);
+        supported = SharpRecipeSupported(sharp.dwords[i], 32, unsupported);
     }
     std::printf("SHARP_RECIPE kind=image pgm=%#018llx supported=%d unsupported=%s\n",
                 static_cast<unsigned long long>(info.pgm_hash), supported ? 1 : 0,

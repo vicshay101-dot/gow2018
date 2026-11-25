@@ -32,8 +32,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 14u; // gow3: stage A recipe diagnostic (forces recompile so SHARP_RECIPE is emitted)
-static constexpr u32 ShaderMetaVersion = 14u; // gow3: stage A recipe diagnostic (forces recompile so SHARP_RECIPE is emitted)
+static constexpr u32 ShaderBinaryVersion = 15u; // gow3: stage A recipe diagnostic (forces recompile so SHARP_RECIPE is emitted)
+static constexpr u32 ShaderMetaVersion = 15u; // gow3: stage A recipe diagnostic (forces recompile so SHARP_RECIPE is emitted)
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 
