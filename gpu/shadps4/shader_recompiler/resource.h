@@ -15,15 +15,6 @@
 
 namespace Shader {
 
-// gow3 diagnostic: a bind-time descriptor fetch failed for this shader. Counts per shader and prints
-// the first occurrences and then every 1024th. Does not change the bound resource.
-inline void LogSharpFetchFailure(u64 pgm_hash, const char* kind) {
-    static std::unordered_map<u64, u32> counts;
-    const u32 count = ++counts[pgm_hash];
-    if (count <= 4 || (count & 1023) == 0) {
-        std::printf("SHARP_FETCH_FAIL kind=%s pgm=%#018llx (occurrence %u)\n", kind,
-                    static_cast<unsigned long long>(pgm_hash), count);
-    }
 }
 
 static constexpr u32 NUM_USER_DATA_REGS = 16;
@@ -114,7 +105,6 @@ struct BufferResource {
     constexpr AmdGpu::Buffer GetSharp(const auto& info) const noexcept {
         AmdGpu::Buffer buffer;
         if (!sharp_fetch.Fetch(info.FlatUserData().data(), &buffer)) {
-            LogSharpFetchFailure(info.pgm_hash, "buffer");
             return AmdGpu::Buffer::Null();
         }
         if (post_op == SharpFetchPostOp::BitwiseOrDw1WithImm) {
@@ -153,7 +143,6 @@ struct ImageResource {
     constexpr AmdGpu::Image GetSharp(const auto& info) const noexcept {
         AmdGpu::Image image{};
         if (!Fetch(info.FlatUserData().data(), &image)) {
-            LogSharpFetchFailure(info.pgm_hash, "image");
             return AmdGpu::Image::Null(is_depth);
         }
         if (post_op == SharpFetchPostOp::ConvertCubeTo2DArray) {
