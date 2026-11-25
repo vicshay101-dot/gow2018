@@ -20,9 +20,8 @@ fi
 "$bt/zipalign" -P 16 -f 4 "$unsigned" "$aligned"
 "$bt/zipalign" -c -P 16 -v 4 "$aligned"
 
-# Sign the APK. The installed manifest has minSdk 30, so v3 is sufficient
-# for the Android versions this package supports. Do not fail the build on
-# optional legacy v1/v2 schemes when apksigner reports them as absent.
+# Sign the APK with both v2 and v3 schemes so Android 11+ (minSdk 30) and
+# OEM installers that require v2 accept the package without parse errors.
 "$bt/apksigner" sign \
     --ks "$key" --ks-key-alias bionic \
     --ks-pass pass:android --key-pass pass:android \
@@ -32,6 +31,10 @@ fi
 
 verify_output=$("$bt/apksigner" verify --verbose --print-certs "$apk")
 printf '%s\n' "$verify_output"
+if ! grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' <<<"$verify_output"; then
+    echo 'ERROR: APK signature scheme v2 was not verified' >&2
+    exit 1
+fi
 if ! grep -Fq 'Verified using v3 scheme (APK Signature Scheme v3): true' <<<"$verify_output"; then
     echo 'ERROR: APK signature scheme v3 was not verified' >&2
     exit 1
