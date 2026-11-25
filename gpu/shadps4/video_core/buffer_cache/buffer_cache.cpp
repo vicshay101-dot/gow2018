@@ -30,6 +30,25 @@ namespace VideoCore {
 static constexpr size_t GDS_BUFFER_SIZE = 64_KB;
 static constexpr size_t STREAM_BUFFER_SIZE = 128_MB;
 
+constexpr std::optional<u32> CmaskColorExpandedValue(u32 num_samples) {
+    switch (num_samples) {
+    case 1:
+        return 0xFFFFFFFFu;
+    case 2:
+        return 0xDDDDDDDDu;
+    case 4:
+        return 0xEEEEEEEEu;
+    case 8:
+        return 0xFFFFFFFFu;
+    default:
+        return std::nullopt;
+    }
+}
+static_assert(CmaskColorExpandedValue(1) == 0xFFFFFFFFu);
+static_assert(CmaskColorExpandedValue(2) == 0xDDDDDDDDu);
+static_assert(CmaskColorExpandedValue(4) == 0xEEEEEEEEu);
+static_assert(CmaskColorExpandedValue(8) == 0xFFFFFFFFu);
+
 static constexpr auto ARENA_USAGE =
     vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst |
     vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eStorageBuffer |
@@ -606,7 +625,11 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         NoteHotUse(device_addr, size);
     }
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
-    if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
+    // Metadata surfaces (CMask/HTile) must bypass the stream buffer even when <= STREAM_THRESHOLD
+    // (e.g. 768x432 CMask is ~2.5 KiB) so SynchronizeMemoryFromImage fills expanded metadata.
+    const bool is_meta = !is_written && texture_cache.GetMetaInfo(device_addr).has_value();
+    if (!is_written && !is_meta && size <= STREAM_THRESHOLD &&
+        !IsRegionGpuModified(device_addr, size)) {
         // If this small read-only buffer is already resident and clean in the GPU arena,
         // bind the arena directly to avoid thousands of redundant CPU memcpy calls per frame
         // without causing any upload or renderpass break.
@@ -880,8 +903,8 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
     if (src_buffer) {
         runtime.CopyBuffer(src_buffer, arena, copies);
     }
-    if (is_texel_buffer && !is_written) {
-        return SynchronizeMemoryFromImage(arena, device_addr, size);
+    if (!is_written && (is_texel_buffer || texture_cache.GetMetaInfo(device_addr).has_value())) {
+        return SynchronizeMemoryFromImage(arena, device_addr, size, is_texel_buffer);
     }
     return false;
 }
@@ -968,20 +991,40 @@ const Buffer* BufferCache::UploadCopies(const Buffer* arena, std::span<vk::Buffe
     return staging.buffer;
 }
 
-bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size) {
-    if (auto type = texture_cache.IsMeta(device_addr)) {
-        if (*type == TextureCache::MetaType::HTile) {
+bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size,
+                                             bool is_texel_buffer) {
+    if (const auto meta = texture_cache.GetMetaInfo(device_addr)) {
+        const u32 fill_size = size & ~3u;
+        if (meta->type == TextureCache::MetaType::HTile) {
             static constexpr u32 ZmaskUncompressed = 0xf;
-            runtime.FillBuffer(arena, arena->Offset(device_addr), size, ZmaskUncompressed);
+            if (fill_size > 0) {
+                runtime.FillBuffer(arena, arena->Offset(device_addr), fill_size, ZmaskUncompressed);
+            }
+            return true;
+        } else if (meta->type == TextureCache::MetaType::CMask) {
+            const auto expanded_value = CmaskColorExpandedValue(meta->num_samples);
+            if (!expanded_value) {
+                LOG_WARNING(Render_Vulkan,
+                            "Unsupported CMask sample count: address={:#x}, size={:#x}, "
+                            "samples={}, owner={}:{}",
+                            device_addr, size, meta->num_samples, meta->owner_id.index,
+                            meta->owner_uid);
+                return false;
+            }
+            if (fill_size > 0) {
+                runtime.FillBuffer(arena, arena->Offset(device_addr), fill_size, *expanded_value);
+            }
             return true;
         } else {
-            // gow3: CMask aliases are hit every frame by GoW 2018; report the first few only.
             static std::atomic<u32> meta_logged{0};
             if (meta_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
                 LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}",
-                            magic_enum::enum_name(*type));
+                            magic_enum::enum_name(meta->type));
             }
         }
+    }
+    if (!is_texel_buffer) {
+        return false;
     }
     // gow3: most texel buffers alias no image; remember misses until images change.
     const u64 generation = texture_cache.RegistryGeneration();

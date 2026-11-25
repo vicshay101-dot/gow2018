@@ -163,7 +163,8 @@ private:
     const Buffer* UploadCopies(const Buffer* arena, std::span<vk::BufferCopy> copies,
                                size_t total_size_bytes);
 
-    bool SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size);
+    bool SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size,
+                                    bool is_texel_buffer);
 
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
