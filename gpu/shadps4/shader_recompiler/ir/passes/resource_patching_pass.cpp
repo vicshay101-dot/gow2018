@@ -279,6 +279,11 @@ static bool RecipeSig(const IR::Value& value, int depth, std::string& sig, std::
             break;
         default:
             unsupported = std::string{magic_enum::enum_name(op)};
+            if (op == IR::Opcode::GetAttributeU32 && inst->NumArgs() > 0 &&
+                inst->Arg(0).IsImmediate()) {
+                // Name the vertex/instance attribute, so the log says which one blocks the recipe.
+                unsupported += ":attr" + std::to_string(static_cast<u32>(inst->Arg(0).Attribute()));
+            }
             return false;
         }
         sig += std::string{magic_enum::enum_name(op)} + "(";
