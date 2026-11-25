@@ -249,6 +249,7 @@ static bool RecipeSig(const IR::Value& value, int depth, std::string& sig, std::
         case IR::Opcode::IAdd32:
         case IR::Opcode::IMul32:
         case IR::Opcode::FindILsb32:
+        case IR::Opcode::BitFieldUExtract:
         case IR::Opcode::ShiftLeftLogical32:
         case IR::Opcode::ShiftRightLogical32:
         case IR::Opcode::BitwiseAnd32:
