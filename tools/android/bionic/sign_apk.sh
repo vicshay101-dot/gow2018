@@ -26,6 +26,7 @@ fi
 "$bt/apksigner" sign \
     --ks "$key" --ks-key-alias bionic \
     --ks-pass pass:android --key-pass pass:android \
+    --v2-signing-enabled true \
     --v3-signing-enabled true \
     --out "$apk" "$aligned"
 
