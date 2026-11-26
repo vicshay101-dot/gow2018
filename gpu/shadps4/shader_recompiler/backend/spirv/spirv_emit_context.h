@@ -296,6 +296,8 @@ public:
     Id image_f32{};
     Id bindless_images_id{};
     Id bindless_image_type{};
+    Id bindless_storage_id{};
+    Id bindless_storage_type{};
 
     Id shared_memory_u16{};
     Id shared_memory_u32{};

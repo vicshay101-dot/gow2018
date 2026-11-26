@@ -12,42 +12,63 @@
 
 namespace Shader::Backend::SPIRV {
 
+// Index of the bindless array for one access: the chain from the IR, computed in the shader.
+static Id ComputeBindlessIndex(EmitContext& ctx, const Info::BindlessImageRecipe& recipe) {
+    static std::mutex log_mutex;
+    static std::unordered_set<u64> logged_pgms;
+    {
+        std::scoped_lock lock{log_mutex};
+        if (logged_pgms.insert(ctx.info.pgm_hash).second) {
+            std::printf("SHARP_INDEX pgm=%#018llx m1=%u c2=%u m2=%u s=%u\n",
+                        static_cast<unsigned long long>(ctx.info.pgm_hash), recipe.m1, recipe.c2,
+                        recipe.m2, recipe.s);
+        }
+    }
+    const Id r_id = EmitReadConstBuffer(ctx, recipe.r_buffer_handle, ctx.ConstU32(recipe.r_offset));
+    const Id w_id = EmitGetAttributeU32(ctx, IR::Attribute::WorkgroupId, recipe.workgroup_comp);
+    const Id add1 = ctx.OpIAdd(ctx.U32[1], r_id, w_id);
+    const Id mul1 = ctx.OpIMul(ctx.U32[1], add1, ctx.ConstU32(recipe.m1));
+    const Id add2 = ctx.OpIAdd(ctx.U32[1], mul1, ctx.ConstU32(recipe.c2));
+    const Id mul2 = ctx.OpIMul(ctx.U32[1], add2, ctx.ConstU32(recipe.m2));
+    const Id index_id = ctx.OpShiftRightLogical(ctx.U32[1], mul2, ctx.ConstU32(recipe.s));
+    ctx.Decorate(index_id, spv::Decoration::NonUniform);
+    return index_id;
+}
+
 static Id LoadImage(EmitContext& ctx, u32 handle) {
     const u32 image_idx = handle & 0xFFFF;
     const auto& texture = ctx.images[image_idx];
     if (!texture.is_storage && Sirit::ValidId(ctx.bindless_images_id) &&
         texture.image_type.value == ctx.bindless_image_type.value) {
         if (const auto* recipe = ctx.info.FindBindlessImageRecipe(image_idx)) {
-            static std::mutex log_mutex;
-            static std::unordered_set<u64> logged_pgms;
-            {
-                std::scoped_lock lock{log_mutex};
-                if (logged_pgms.insert(ctx.info.pgm_hash).second) {
-                    std::printf("SHARP_INDEX pgm=%#018llx m1=%u c2=%u m2=%u s=%u\n",
-                                static_cast<unsigned long long>(ctx.info.pgm_hash), recipe->m1,
-                                recipe->c2, recipe->m2, recipe->s);
-                }
-            }
-            const Id r_id =
-                EmitReadConstBuffer(ctx, recipe->r_buffer_handle, ctx.ConstU32(recipe->r_offset));
-            const Id w_id =
-                EmitGetAttributeU32(ctx, IR::Attribute::WorkgroupId, recipe->workgroup_comp);
-            const Id add1 = ctx.OpIAdd(ctx.U32[1], r_id, w_id);
-            const Id mul1 = ctx.OpIMul(ctx.U32[1], add1, ctx.ConstU32(recipe->m1));
-            const Id add2 = ctx.OpIAdd(ctx.U32[1], mul1, ctx.ConstU32(recipe->c2));
-            const Id mul2 = ctx.OpIMul(ctx.U32[1], add2, ctx.ConstU32(recipe->m2));
-            const Id index_id =
-                ctx.OpShiftRightLogical(ctx.U32[1], mul2, ctx.ConstU32(recipe->s));
-            ctx.Decorate(index_id, spv::Decoration::NonUniform);
-            const Id ptr_type =
-                ctx.TypePointer(spv::StorageClass::UniformConstant, texture.image_type);
-            const Id img_ptr =
-                ctx.OpAccessChain(ptr_type, ctx.bindless_images_id, std::array{index_id});
+            const Id index_id = ComputeBindlessIndex(ctx, *recipe);
+            const Id ptr_type = ctx.TypePointer(spv::StorageClass::UniformConstant, texture.image_type);
+            const Id img_ptr = ctx.OpAccessChain(ptr_type, ctx.bindless_images_id, std::array{index_id});
             ctx.Decorate(img_ptr, spv::Decoration::NonUniform);
             return ctx.OpLoad(texture.image_type, img_ptr);
         }
     }
     return ctx.OpLoad(texture.image_type, texture.id);
+}
+
+// Pointer to the storage-array element for a written image, or an invalid Id when this access keeps
+// the existing per-binding path (no recipe, LOD fallback in use, or a different image type).
+static Id StorageBindlessPtr(EmitContext& ctx, u32 handle, bool lod_fallback) {
+    const u32 image_idx = handle & 0xFFFF;
+    const auto& texture = ctx.images[image_idx];
+    if (!texture.is_storage || lod_fallback || !Sirit::ValidId(ctx.bindless_storage_id) ||
+        texture.image_type.value != ctx.bindless_storage_type.value) {
+        return {};
+    }
+    const auto* recipe = ctx.info.FindBindlessImageRecipe(image_idx);
+    if (!recipe) {
+        return {};
+    }
+    const Id index_id = ComputeBindlessIndex(ctx, *recipe);
+    const Id ptr_type = ctx.TypePointer(spv::StorageClass::UniformConstant, texture.image_type);
+    const Id img_ptr = ctx.OpAccessChain(ptr_type, ctx.bindless_storage_id, std::array{index_id});
+    ctx.Decorate(img_ptr, spv::Decoration::NonUniform);
+    return img_ptr;
 }
 
 struct ImageOperands {
@@ -288,7 +309,9 @@ Id EmitImageRead(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id lod
         }
         texel = ctx.OpImageFetch(color_type, image, coords, operands.mask, operands.operands);
     } else {
-        Id image_ptr = texture.id;
+        const bool lod_fallback = Sirit::ValidId(lod) && !ctx.profile.supports_image_load_store_lod;
+        const Id bindless_ptr = StorageBindlessPtr(ctx, handle, lod_fallback);
+        Id image_ptr = Sirit::ValidId(bindless_ptr) ? bindless_ptr : texture.id;
         if (ctx.profile.supports_image_load_store_lod) {
             operands.Add(spv::ImageOperandsMask::Lod, lod);
         } else if (Sirit::ValidId(lod)) {
@@ -314,7 +337,9 @@ Id EmitImageRead(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id lod
 void EmitImageWrite(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id lod, Id ms,
                     Id color) {
     const auto& texture = ctx.images[handle & 0xFFFF];
-    Id image_ptr = texture.id;
+    const bool lod_fallback = Sirit::ValidId(lod) && !ctx.profile.supports_image_load_store_lod;
+    const Id bindless_ptr = StorageBindlessPtr(ctx, handle, lod_fallback);
+    Id image_ptr = Sirit::ValidId(bindless_ptr) ? bindless_ptr : texture.id;
     const Id color_type = texture.data_types->Get(4);
     ImageOperands operands;
     operands.Add(spv::ImageOperandsMask::Sample, ms);

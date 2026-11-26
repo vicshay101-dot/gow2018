@@ -32,8 +32,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 18u; // gow2018: SRT walker OpLoad32 dynamic guest loads
-static constexpr u32 ShaderMetaVersion = 18u; // gow2018: SRT walker OpLoad32 dynamic guest loads
+static constexpr u32 ShaderBinaryVersion = 19u; // gow3: SRT OpLoad32 fallback + stage 2a-ii storage array
+static constexpr u32 ShaderMetaVersion = 19u; // gow3: SRT OpLoad32 fallback + stage 2a-ii storage array
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 

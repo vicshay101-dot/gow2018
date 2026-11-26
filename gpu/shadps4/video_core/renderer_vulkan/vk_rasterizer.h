@@ -368,6 +368,7 @@ private:
     std::pair<VideoCore::ImageId, VideoCore::TextureCache::ImageDesc> db_desc;
     boost::container::static_vector<vk::DescriptorImageInfo, Shader::NUM_IMAGES> image_infos;
     std::array<vk::DescriptorImageInfo, 64> bindless_image_infos{};
+    std::array<vk::DescriptorImageInfo, 64> bindless_storage_infos{};
     boost::container::static_vector<vk::DescriptorBufferInfo, Shader::NUM_BUFFERS> buffer_infos;
     boost::container::static_vector<VideoCore::ImageId, Shader::NUM_IMAGES> bound_images;
     struct BoundBuffer {

@@ -81,6 +81,17 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         binding += 1;
     }
 
+    if (bindless_images) {
+        bindings.push_back({
+            .binding = binding,
+            .descriptorType = vk::DescriptorType::eStorageImage,
+            .descriptorCount = 64,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+        });
+        binding_flags.push_back(vk::DescriptorBindingFlagBits::ePartiallyBound);
+        binding += 1;
+    }
+
     const vk::PushConstantRange push_constants = {
         .stageFlags = vk::ShaderStageFlagBits::eCompute,
         .offset = 0,

@@ -1999,6 +1999,83 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
             });
             ++set_write_index;
             binding.unified += 1;
+            // Storage array: the images the shader writes, same table and same index (one table per
+            // shader, enforced in the resource pass). Descriptors use the general layout.
+            const Shader::Info::BindlessImageRecipe* st_recipe = nullptr;
+            for (const auto& r : cs_stage->bindless_image_recipes) {
+                if (r.image_binding < cs_stage->images.size() &&
+                    cs_stage->images[r.image_binding].is_written) {
+                    st_recipe = &r;
+                    break;
+                }
+            }
+            if (st_recipe) {
+                const auto& storage_target = cs_stage->images[st_recipe->image_binding];
+                const auto resolve_storage = [&](const AmdGpu::Image& tsharp,
+                                                 vk::DescriptorImageInfo& out) -> bool {
+                    VideoCore::TextureCache::ImageDesc desc{tsharp, storage_target};
+                    VideoCore::ImageId image_id = texture_cache.FindImage(desc);
+                    if (!image_id) {
+                        return false;
+                    }
+                    bound_images.emplace_back(image_id);
+                    auto* image = &texture_cache.GetImage(image_id);
+                    if (auto depth_image_id = texture_cache.GetAssociatedDepth(*image)) {
+                        image_id = depth_image_id;
+                        image = &texture_cache.GetImage(image_id);
+                    }
+                    auto& image_view = texture_cache.FindTexture(image_id, desc, nullptr, true);
+                    needs_barrier |= runtime.Transit(
+                        image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
+                        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
+                        desc.view_info.range);
+                    out = vk::DescriptorImageInfo{
+                        .sampler = VK_NULL_HANDLE,
+                        .imageView = *image_view.image_view,
+                        .imageLayout = vk::ImageLayout::eGeneral,
+                    };
+                    return true;
+                };
+                vk::DescriptorImageInfo storage_fallback{};
+                const bool has_storage_fallback =
+                    resolve_storage(storage_target.GetSharp(*cs_stage), storage_fallback);
+                for (u32 k = 0; k < 64u; ++k) {
+                    vk::DescriptorImageInfo entry{};
+                    bool filled = false;
+                    if (table_base_addr != 0) {
+                        const VAddr tsharp_addr =
+                            table_base_addr +
+                            (static_cast<u64>(recipe.table_base_dw) +
+                             static_cast<u64>(k) * static_cast<u64>(recipe.table_stride_dw)) *
+                                4ULL;
+                        if (memory->IsValidGpuMapping(tsharp_addr, sizeof(AmdGpu::Image))) {
+                            AmdGpu::Image tsharp{};
+                            std::memcpy(&tsharp, reinterpret_cast<const void*>(tsharp_addr),
+                                        sizeof(AmdGpu::Image));
+                            const auto data_fmt = tsharp.GetDataFmt();
+                            const auto num_fmt = tsharp.GetNumberFmt();
+                            if (tsharp.Address() != 0 &&
+                                data_fmt != AmdGpu::DataFormat::FormatInvalid &&
+                                memory->IsValidGpuMapping(tsharp.Address(), 0) &&
+                                IsKnownFormat(data_fmt, num_fmt)) {
+                                filled = resolve_storage(tsharp, entry);
+                            }
+                        }
+                    }
+                    bindless_storage_infos[k] =
+                        (!filled && has_storage_fallback) ? storage_fallback : entry;
+                }
+                set_writes.push_back(vk::WriteDescriptorSet{
+                    .dstSet = VK_NULL_HANDLE,
+                    .dstBinding = binding.unified,
+                    .dstArrayElement = 0,
+                    .descriptorCount = 64,
+                    .descriptorType = vk::DescriptorType::eStorageImage,
+                    .pImageInfo = bindless_storage_infos.data(),
+                });
+                ++set_write_index;
+            }
+            binding.unified += 1;
         }
     } else {
         // gow3: textures on the helper, buffers here. Without mip arrays every stage's
