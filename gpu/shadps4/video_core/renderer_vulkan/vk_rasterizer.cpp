@@ -128,7 +128,7 @@ bool ShouldSkipShadowAtlas(Vulkan::Runtime& runtime, Vulkan::Scheduler& schedule
             return static_cast<u32>(std::strtoul(env, nullptr, 10));
         }
         if (const char* shadows = std::getenv("GOW3_SHADOWS"); shadows && shadows[0] == '0') {
-            return 0u;
+            return 2u;
         }
         return 1u;
     }();

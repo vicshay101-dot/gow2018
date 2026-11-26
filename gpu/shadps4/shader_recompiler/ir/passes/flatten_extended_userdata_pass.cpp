@@ -1070,7 +1070,6 @@ static void DumpSrtChain(const IR::Inst* inst, int depth, int indent) {
 
 static thread_local bool g_suppress_unflattened_log = false;
 static thread_local bool g_allow_dynamic_index_fallback = false;
-static thread_local bool g_force_zero_find_lsb = false;
 static thread_local u32 g_dynamic_fallback_hits = 0;
 
 static bool DependsOnAttribute(const IR::Value& value, int depth,
@@ -1139,22 +1138,11 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         if (g_allow_dynamic_index_fallback) {
             std::vector<const IR::Inst*> visited;
             if (DependsOnAttribute(inst->Arg(0), 24, visited)) {
-                SrtProgram sub;
-                if (!g_force_zero_find_lsb && EmitOperand(sub, pass_info, inst->Arg(0))) {
-                    // Use tile 0's first active layer bit if in [0, 11], else safely fall back to slot 0.
-                    p.insert(p.end(), sub.begin(), sub.end());
-                    p.insert(p.end(), {OpFindILsb, OpImm, 12u, OpULt});
-                    p.insert(p.end(), sub.begin(), sub.end());
-                    p.insert(p.end(), {OpFindILsb, OpImm, 0u, OpSelect});
-                    ++g_dynamic_fallback_hits;
-                    return true;
-                }
-                if (g_force_zero_find_lsb) {
-                    p.insert(p.end(), {OpImm, 0u});
-                    ++g_dynamic_fallback_hits;
-                    return true;
-                }
-                return false;
+                // Only collapse 12-bit tile-mask material lookups (FindILsb32) to table slot 0.
+                // Never collapse direct GetAttributeU32 particle emitter indexing!
+                p.insert(p.end(), {OpImm, 0u});
+                ++g_dynamic_fallback_hits;
+                return true;
             }
         }
         return EmitComputeOffsetOp(p, pass_info, inst, OpFindILsb, 1);
@@ -1195,11 +1183,8 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
     case IR::Opcode::ReadFirstLane:
         return EmitOperand(p, pass_info, inst->Arg(0));
     case IR::Opcode::GetAttributeU32:
-        if (g_allow_dynamic_index_fallback) {
-            p.insert(p.end(), {OpImm, 0u});
-            ++g_dynamic_fallback_hits;
-            return true;
-        }
+        // Direct WorkgroupId/vertex attribute indexing (e.g. particle emitter arrays 38c7b95b)
+        // must not be collapsed to 0, otherwise all workgroups overwrite emitter 0's vertices.
         if (!g_suppress_unflattened_log) {
             LogSrtError("Unexpected instruction for offset computation",
                         magic_enum::enum_name(inst->GetOpcode()));
@@ -1339,9 +1324,12 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
             break;
         }
     }
-    if (any_unresolved) {
+    static const bool srt_tile_fallback_enabled = [] {
+        const char* env = std::getenv("GOW3_SRT_ATTR_FALLBACK");
+        return !env || env[0] != '0';
+    }();
+    if (any_unresolved && srt_tile_fallback_enabled) {
         g_allow_dynamic_index_fallback = true;
-        g_force_zero_find_lsb = false;
         g_dynamic_fallback_hits = 0;
         for (u32 pass = 0; pass < MaxFlattenPasses; ++pass) {
             bool any_progress = false;
@@ -1354,24 +1342,9 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
                 break;
             }
         }
-        if (any_unresolved) {
-            g_force_zero_find_lsb = true;
-            for (u32 pass = 0; pass < MaxFlattenPasses; ++pass) {
-                bool any_progress = false;
-                any_unresolved = false;
-                for (const auto& [sgpr_base, root] : pass_info.srt_roots) {
-                    VisitPointer(IR::Value(static_cast<u32>(sgpr_base)), root, pass_info, program,
-                                 any_progress, any_unresolved, false);
-                }
-                if (!any_unresolved || !any_progress) {
-                    break;
-                }
-            }
-        }
-        g_force_zero_find_lsb = false;
         g_allow_dynamic_index_fallback = false;
         if (g_dynamic_fallback_hits > 0) {
-            std::printf("GOW3_SRT_ATTR_FALLBACK: pgm=%#018llx hits=%u unresolved=%d\n",
+            std::printf("GOW3_SRT_TILE_FALLBACK: pgm=%#018llx hits=%u unresolved=%d\n",
                         static_cast<unsigned long long>(info.pgm_hash), g_dynamic_fallback_hits,
                         any_unresolved ? 1 : 0);
         }

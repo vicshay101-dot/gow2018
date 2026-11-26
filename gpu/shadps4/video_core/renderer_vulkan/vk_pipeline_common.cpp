@@ -88,7 +88,8 @@ void Pipeline::BindResources(DescriptorWrites& set_writes,
             const auto buffers = scheduler.RecordData(source_buffers);
             const vk::DescriptorUpdateTemplate update = *buffer_descriptor_template;
             scheduler.Record([update, layout, buffers](vk::CommandBuffer cmdbuf) {
-                cmdbuf.pushDescriptorSetWithTemplateKHR(update, layout, 0, buffers.data());
+                cmdbuf.pushDescriptorSetWithTemplateKHR(update, layout, 0,
+                                                        static_cast<const void*>(buffers.data()));
             });
             return;
         }
