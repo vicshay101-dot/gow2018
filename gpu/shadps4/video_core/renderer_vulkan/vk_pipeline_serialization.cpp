@@ -32,8 +32,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 22u; // gow3: BINDLESS_PROBE diagnostic (forces recompile so the probe prints)
-static constexpr u32 ShaderMetaVersion = 22u; // gow3: BINDLESS_PROBE diagnostic (forces recompile so the probe prints)
+static constexpr u32 ShaderBinaryVersion = 23u; // gow3: BINDLESS_TREE diagnostic (forces recompile)
+static constexpr u32 ShaderMetaVersion = 23u; // gow3: BINDLESS_TREE diagnostic (forces recompile)
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 

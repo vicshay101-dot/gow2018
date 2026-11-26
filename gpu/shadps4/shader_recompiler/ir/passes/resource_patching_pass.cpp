@@ -629,6 +629,28 @@ static bool ExtractTableAddressing(const IR::Value& dw0_val, PendingBindlessReci
     return false;
 }
 
+static void DumpProbeTree(u64 pgm_hash, const IR::Value& value, int depth, int indent) {
+    if (value.IsImmediate()) {
+        if (value.Type() == IR::Type::U32) {
+            std::printf("BINDLESS_TREE pgm=%#018llx %*simm=%u\n",
+                        static_cast<unsigned long long>(pgm_hash), indent * 2, "", value.U32());
+        }
+        return;
+    }
+    const IR::Inst* inst = value.TryInst();
+    if (!inst) {
+        return;
+    }
+    std::printf("BINDLESS_TREE pgm=%#018llx %*s%s\n", static_cast<unsigned long long>(pgm_hash),
+                indent * 2, "", std::string{magic_enum::enum_name(inst->GetOpcode())}.c_str());
+    if (depth <= 0) {
+        return;
+    }
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        DumpProbeTree(pgm_hash, inst->Arg(i), depth - 1, indent + 1);
+    }
+}
+
 void PatchBufferSharp(const ResourceDiscovery& resource, Info& info, Descriptors& descriptors,
                       const Profile& profile) {
     IR::Inst& inst = *resource.user;
@@ -780,6 +802,11 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
                     static_cast<unsigned long long>(info.pgm_hash),
                     profile.supports_bindless_images ? 1 : 0, is_written ? 1 : 0,
                     chain_found ? 1 : 0, table_ok ? 1 : 0, first_op);
+        static thread_local u64 last_dumped = 0;
+        if (chain_found && !table_ok && last_dumped != info.pgm_hash) {
+            last_dumped = info.pgm_hash;
+            DumpProbeTree(info.pgm_hash, resource.sharps[0].dwords[0], 7, 0);
+        }
     }
 
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
