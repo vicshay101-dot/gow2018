@@ -753,17 +753,33 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
     u32 image_binding = descriptors.Add(image_res);
 
     // Written images also take the bindless path: the storage array serves them (see emit_spirv_image).
-    if (profile.supports_bindless_images && IsBindlessComputeTarget(info.pgm_hash)) {
-        for (u32 i = 0; i < resource.sharps[0].num_dwords; ++i) {
-            PendingBindlessRecipe pending{};
-            u32 budget = 4096;
-            if (FindIndexChainInValue(resource.sharps[0].dwords[i], 32, budget, pending) &&
-                ExtractTableAddressing(resource.sharps[0].dwords[0], pending)) {
-                pending.recipe.image_binding = image_binding;
-                pending_bindless.push_back(pending);
-                break;
+    if (IsBindlessComputeTarget(info.pgm_hash)) {
+        // Probe: one line per image of a target pgm, so the log shows whether this pass ran for it.
+        bool chain_found = false;
+        bool table_ok = false;
+        u32 first_op = 0;
+        if (profile.supports_bindless_images) {
+            for (u32 i = 0; i < resource.sharps[0].num_dwords; ++i) {
+                PendingBindlessRecipe pending{};
+                u32 budget = 4096;
+                if (FindIndexChainInValue(resource.sharps[0].dwords[i], 32, budget, pending)) {
+                    chain_found = true;
+                    if (ExtractTableAddressing(resource.sharps[0].dwords[0], pending)) {
+                        table_ok = true;
+                        pending.recipe.image_binding = image_binding;
+                        pending_bindless.push_back(pending);
+                        break;
+                    }
+                }
             }
         }
+        if (const IR::Inst* dw0 = resource.sharps[0].dwords[0].TryInst()) {
+            first_op = static_cast<u32>(dw0->GetOpcode());
+        }
+        std::printf("BINDLESS_PROBE pgm=%#018llx supported=%d written=%d chain=%d table=%d dw0_op=%u\n",
+                    static_cast<unsigned long long>(info.pgm_hash),
+                    profile.supports_bindless_images ? 1 : 0, is_written ? 1 : 0,
+                    chain_found ? 1 : 0, table_ok ? 1 : 0, first_op);
     }
 
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
