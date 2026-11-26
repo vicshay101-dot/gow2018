@@ -248,4 +248,6 @@
     <string name="param_expand_video_arena">Expand video arena</string>
     <string name="param_desc_expand_video_arena">Increases the game video arena independently of resolution. OFF keeps the original arena and may cause texture errors or crashes, especially at higher resolutions. Requires restart.</string>
     <string name="contact_bionic_label">Android/Bionic runtime</string>
+    <string name="home_swap_rb">Swap red and blue (R/B)</string>
+    <string name="home_swap_rb_hint">Use if game colors are reversed with your driver. Takes effect on the next game start.</string>
 </resources>

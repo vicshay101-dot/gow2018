@@ -211,4 +211,6 @@
     <string name="param_expand_video_arena">Aumentar arena de vídeo</string>
     <string name="param_desc_expand_video_arena">Aumenta a arena de vídeo do jogo independentemente da resolução. Desativado mantém a arena original e pode causar erros de textura ou falhas, especialmente em resoluções maiores. Requer reiniciar.</string>
     <string name="contact_bionic_label">Runtime Android/Bionic</string>
+    <string name="home_swap_rb">Inverter vermelho e azul (R/B)</string>
+    <string name="home_swap_rb_hint">Use se as cores do jogo estiverem invertidas com seu driver. Vale no próximo início do jogo.</string>
 </resources>

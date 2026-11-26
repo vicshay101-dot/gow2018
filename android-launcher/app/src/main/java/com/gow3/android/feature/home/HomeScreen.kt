@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -90,6 +91,25 @@ internal fun HomeScreen(
         Spacer(Modifier.height(20.dp))
         LaunchParameters(gameDir, updateDir, iniValues, ::save, onChooseGameFolder, onChooseUpdateFolder)
         GpuDriverCard()
+        Spacer(Modifier.height(12.dp))
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(LauncherColors.navSurface)
+                .border(BorderStroke(1.dp, LauncherColors.gold.copy(alpha = 0.25f)), RoundedCornerShape(10.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(stringResource(R.string.home_swap_rb), color = LauncherColors.textPrimary, modifier = Modifier.weight(1f))
+                Switch(checked = iniValues["swap_rb"] == "1", onCheckedChange = { save("swap_rb", if (it) "1" else "0") })
+            }
+            Text(stringResource(R.string.home_swap_rb_hint), color = LauncherColors.textMuted, fontSize = 12.sp)
+        }
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             PkgAction(stringResource(R.string.pkg_install), onInstallBasePkg, !pkgInstallBusy, Modifier.weight(1f))
