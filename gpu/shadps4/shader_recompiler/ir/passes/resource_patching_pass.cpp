@@ -752,8 +752,8 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
 
     u32 image_binding = descriptors.Add(image_res);
 
-    if (profile.supports_bindless_images && IsBindlessComputeTarget(info.pgm_hash) &&
-        !image_res.is_written) {
+    // Written images also take the bindless path: the storage array serves them (see emit_spirv_image).
+    if (profile.supports_bindless_images && IsBindlessComputeTarget(info.pgm_hash)) {
         for (u32 i = 0; i < resource.sharps[0].num_dwords; ++i) {
             PendingBindlessRecipe pending{};
             u32 budget = 4096;
