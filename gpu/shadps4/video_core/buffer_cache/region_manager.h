@@ -147,9 +147,12 @@ public:
         }
 
         RegionBits& bits = GetRegionBits<type>();
-        // gow3: nothing modified in the range means nothing to clear or re-protect (CPU bits
-        // always match `writeable` after a change); this runs for every buffer binding, so
-        // it is checked before building the range mask.
+        if constexpr (type == Type::CPU) {
+            RefreshHotPagesForEpoch();
+        }
+        // gow3: nothing modified in the range means nothing to clear or re-protect
+        // (writeable == cpu | hot); this runs for every buffer binding, so it is checked
+        // before building the range mask.
         if (type == Type::CPU && !bits.AnyInRange(start_page, end_page) &&
             !Gow3Toggle::Disabled(Gow3Toggle::PageTrackingEarlyExit)) {
             return;
@@ -159,7 +162,7 @@ public:
         if constexpr (clear) {
             bits.UnsetRange(start_page, end_page);
             if constexpr (type == Type::CPU) {
-                KeepHotPagesModified(start_page, end_page);
+                ExpireHotPagesIfNeeded();
                 UpdateProtection<true, false>();
             } else if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled) {
                 UpdateProtection<false, true>();
@@ -188,6 +191,14 @@ public:
         }
 
         const RegionBits& bits = GetRegionBits<type>();
+        if constexpr (type == Type::CPU) {
+            if (num_hot != 0 &&
+                hot_refreshed_epoch !=
+                    Gow3Stats::hot_upload_epoch.load(std::memory_order_relaxed) &&
+                hot.AnyInRange(start_page, end_page)) {
+                return true;
+            }
+        }
         return bits.AnyInRange(start_page, end_page);
     }
 
@@ -206,16 +217,22 @@ private:
     template <bool track, bool is_read>
     void UpdateProtection() {
         RENDERER_TRACE;
-        RegionBits mask = is_read ? (~gpu ^ readable) : (cpu ^ writeable);
-        if (mask.None()) {
-            return;
-        }
         if constexpr (is_read) {
+            RegionBits mask = ~gpu ^ readable;
+            if (mask.None()) {
+                return;
+            }
             readable = ~gpu;
+            tracker->UpdatePageWatchersForRegion<track, true>(cpu_addr, mask);
         } else {
-            writeable = cpu;
+            const RegionBits desired = cpu | hot;
+            RegionBits mask = desired ^ writeable;
+            if (mask.None()) {
+                return;
+            }
+            writeable = desired;
+            tracker->UpdatePageWatchersForRegion<track, false>(cpu_addr, mask);
         }
-        tracker->UpdatePageWatchersForRegion<track, is_read>(cpu_addr, mask);
     }
 
     // gow3: pages the guest writes again and again (per-frame constants, skinning output)
@@ -238,7 +255,7 @@ private:
     // Upper bound on the global hot set (pages). The opt-in run that grew to ~14k pages (56 MB)
     // re-uploaded all of them on every use; a few thousand pages cover the pages that fault most.
     static constexpr std::int64_t MaxHotPages = 512;
-    static constexpr auto HotPeriod = std::chrono::seconds(20);
+    static constexpr auto HotPeriod = std::chrono::seconds(300);
 
     void CountWriteFaults(size_t start_page, size_t end_page) {
         const bool hot_enabled = HotPagesEnabled();

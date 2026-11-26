@@ -232,7 +232,7 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
                 if (const char* env = std::getenv("GOW3_WRITE_FAULT_SYNC")) {
                     return static_cast<u32>(std::strtoul(env, nullptr, 10));
                 }
-                return std::getenv("GOW3_ANDROID_PORT") ? 0u : 2u;
+                return 2u;
             }();
             if (write_sync_mode == 0u) {
                 static const bool protect_srt_arena = [] {

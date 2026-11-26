@@ -50,6 +50,7 @@ public:
 
     void NotifyGuestSync() noexcept {
         guest_sync_epoch.fetch_add(1, std::memory_order_relaxed);
+        Gow3Stats::hot_upload_epoch.fetch_add(1, std::memory_order_relaxed);
     }
 
     [[nodiscard]] Runtime& GetRuntime() noexcept {

@@ -1726,6 +1726,7 @@ void Rasterizer::Finish() {
 
 void Rasterizer::OnSubmit() {
     DrainDrawPipe();
+    Gow3Stats::hot_upload_epoch.fetch_add(1, std::memory_order_relaxed);
     last_compute_hash = 0;
     if (fault_process_pending) {
         fault_process_pending = false;
