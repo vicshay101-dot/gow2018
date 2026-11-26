@@ -32,8 +32,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 19u; // gow3: SRT tile-mask only fallback (preserve particle emitters)
-static constexpr u32 ShaderMetaVersion = 19u; // gow3: SRT tile-mask only fallback (preserve particle emitters)
+static constexpr u32 ShaderBinaryVersion = 20u; // gow3: SRT terrain FindILsb-gated full fallback (unresolved=0, particles safe)
+static constexpr u32 ShaderMetaVersion = 20u; // gow3: SRT terrain FindILsb-gated full fallback (unresolved=0, particles safe)
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 

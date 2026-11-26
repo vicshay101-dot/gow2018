@@ -1070,10 +1070,11 @@ static void DumpSrtChain(const IR::Inst* inst, int depth, int indent) {
 
 static thread_local bool g_suppress_unflattened_log = false;
 static thread_local bool g_allow_dynamic_index_fallback = false;
+static thread_local bool g_force_zero_find_lsb = false;
 static thread_local u32 g_dynamic_fallback_hits = 0;
 
-static bool DependsOnAttribute(const IR::Value& value, int depth,
-                               std::vector<const IR::Inst*>& visited) {
+static bool ValueContainsOpcode(const IR::Value& value, IR::Opcode target, int depth,
+                                std::vector<const IR::Inst*>& visited) {
     if (depth <= 0 || value.IsImmediate()) {
         return false;
     }
@@ -1081,7 +1082,7 @@ static bool DependsOnAttribute(const IR::Value& value, int depth,
     if (!inst) {
         return false;
     }
-    if (inst->GetOpcode() == IR::Opcode::GetAttributeU32) {
+    if (inst->GetOpcode() == target) {
         return true;
     }
     if (std::find(visited.begin(), visited.end(), inst) != visited.end()) {
@@ -1089,7 +1090,49 @@ static bool DependsOnAttribute(const IR::Value& value, int depth,
     }
     visited.push_back(inst);
     for (size_t i = 0; i < inst->NumArgs(); ++i) {
-        if (DependsOnAttribute(inst->Arg(i), depth - 1, visited)) {
+        if (ValueContainsOpcode(inst->Arg(i), target, depth - 1, visited)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool DependsOnAttribute(const IR::Value& value, int depth,
+                               std::vector<const IR::Inst*>& visited) {
+    return ValueContainsOpcode(value, IR::Opcode::GetAttributeU32, depth, visited);
+}
+
+static bool SrtSubtreeHasFindILsb(IR::Inst* subtree, PassInfo& pass_info,
+                                  std::vector<const IR::Inst*>& visited_ptrs) {
+    if (!subtree ||
+        std::find(visited_ptrs.begin(), visited_ptrs.end(), subtree) != visited_ptrs.end()) {
+        return false;
+    }
+    visited_ptrs.push_back(subtree);
+    auto* use_list = pass_info.GetUsesAsPointer(subtree);
+    if (!use_list) {
+        return false;
+    }
+    for (const auto& [src_off_dw, use] : *use_list) {
+        if (!src_off_dw.IsImmediate()) {
+            std::vector<const IR::Inst*> visited_expr;
+            if (ValueContainsOpcode(src_off_dw, IR::Opcode::FindILsb32, 32, visited_expr)) {
+                return true;
+            }
+        }
+        if (pass_info.GetUsesAsPointer(use) &&
+            SrtSubtreeHasFindILsb(use, pass_info, visited_ptrs)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool SrtUsesFindILsb(PassInfo& pass_info) {
+    std::vector<const IR::Inst*> visited_ptrs;
+    for (const auto& [sgpr_base, root] : pass_info.srt_roots) {
+        (void)sgpr_base;
+        if (SrtSubtreeHasFindILsb(root, pass_info, visited_ptrs)) {
             return true;
         }
     }
@@ -1138,11 +1181,22 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         if (g_allow_dynamic_index_fallback) {
             std::vector<const IR::Inst*> visited;
             if (DependsOnAttribute(inst->Arg(0), 24, visited)) {
-                // Only collapse 12-bit tile-mask material lookups (FindILsb32) to table slot 0.
-                // Never collapse direct GetAttributeU32 particle emitter indexing!
-                p.insert(p.end(), {OpImm, 0u});
-                ++g_dynamic_fallback_hits;
-                return true;
+                SrtProgram sub;
+                if (!g_force_zero_find_lsb && EmitOperand(sub, pass_info, inst->Arg(0))) {
+                    // Use tile 0's first active layer bit if in [0, 11], else safely fall back to slot 0.
+                    p.insert(p.end(), sub.begin(), sub.end());
+                    p.insert(p.end(), {OpFindILsb, OpImm, 12u, OpULt});
+                    p.insert(p.end(), sub.begin(), sub.end());
+                    p.insert(p.end(), {OpFindILsb, OpImm, 0u, OpSelect});
+                    ++g_dynamic_fallback_hits;
+                    return true;
+                }
+                if (g_force_zero_find_lsb) {
+                    p.insert(p.end(), {OpImm, 0u});
+                    ++g_dynamic_fallback_hits;
+                    return true;
+                }
+                return false;
             }
         }
         return EmitComputeOffsetOp(p, pass_info, inst, OpFindILsb, 1);
@@ -1183,8 +1237,11 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
     case IR::Opcode::ReadFirstLane:
         return EmitOperand(p, pass_info, inst->Arg(0));
     case IR::Opcode::GetAttributeU32:
-        // Direct WorkgroupId/vertex attribute indexing (e.g. particle emitter arrays 38c7b95b)
-        // must not be collapsed to 0, otherwise all workgroups overwrite emitter 0's vertices.
+        if (g_allow_dynamic_index_fallback) {
+            p.insert(p.end(), {OpImm, 0u});
+            ++g_dynamic_fallback_hits;
+            return true;
+        }
         if (!g_suppress_unflattened_log) {
             LogSrtError("Unexpected instruction for offset computation",
                         magic_enum::enum_name(inst->GetOpcode()));
@@ -1328,8 +1385,11 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
         const char* env = std::getenv("GOW3_SRT_ATTR_FALLBACK");
         return !env || env[0] != '0';
     }();
-    if (any_unresolved && srt_tile_fallback_enabled) {
+    // Only apply dynamic tile-index fallback to tile-masked terrain shaders (which use FindILsb32).
+    // Particle emitter shaders (38c7b95b, c78d8517, cbfa423f) have no FindILsb32 and stay untouched.
+    if (any_unresolved && srt_tile_fallback_enabled && SrtUsesFindILsb(pass_info)) {
         g_allow_dynamic_index_fallback = true;
+        g_force_zero_find_lsb = false;
         g_dynamic_fallback_hits = 0;
         for (u32 pass = 0; pass < MaxFlattenPasses; ++pass) {
             bool any_progress = false;
@@ -1342,9 +1402,24 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
                 break;
             }
         }
+        if (any_unresolved) {
+            g_force_zero_find_lsb = true;
+            for (u32 pass = 0; pass < MaxFlattenPasses; ++pass) {
+                bool any_progress = false;
+                any_unresolved = false;
+                for (const auto& [sgpr_base, root] : pass_info.srt_roots) {
+                    VisitPointer(IR::Value(static_cast<u32>(sgpr_base)), root, pass_info, program,
+                                 any_progress, any_unresolved, false);
+                }
+                if (!any_unresolved || !any_progress) {
+                    break;
+                }
+            }
+        }
+        g_force_zero_find_lsb = false;
         g_allow_dynamic_index_fallback = false;
         if (g_dynamic_fallback_hits > 0) {
-            std::printf("GOW3_SRT_TILE_FALLBACK: pgm=%#018llx hits=%u unresolved=%d\n",
+            std::printf("GOW3_SRT_TERRAIN_FALLBACK: pgm=%#018llx hits=%u unresolved=%d\n",
                         static_cast<unsigned long long>(info.pgm_hash), g_dynamic_fallback_hits,
                         any_unresolved ? 1 : 0);
         }
