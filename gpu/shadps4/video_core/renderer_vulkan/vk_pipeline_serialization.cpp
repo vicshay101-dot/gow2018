@@ -32,8 +32,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 24u; // gow3: value-indexed bindless slot (BindlessImageIndex opcode)
-static constexpr u32 ShaderMetaVersion = 24u; // gow3: value-indexed bindless slot (BindlessImageIndex opcode)
+static constexpr u32 ShaderBinaryVersion = 25u; // gow3: merge origin/android + value-indexed bindless
+static constexpr u32 ShaderMetaVersion = 25u; // gow3: merge origin/android + value-indexed bindless
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 

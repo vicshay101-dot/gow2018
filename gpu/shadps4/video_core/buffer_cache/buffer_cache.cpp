@@ -30,6 +30,25 @@ namespace VideoCore {
 static constexpr size_t GDS_BUFFER_SIZE = 64_KB;
 static constexpr size_t STREAM_BUFFER_SIZE = 128_MB;
 
+constexpr std::optional<u32> CmaskColorExpandedValue(u32 num_samples) {
+    switch (num_samples) {
+    case 1:
+        return 0xFFFFFFFFu;
+    case 2:
+        return 0xDDDDDDDDu;
+    case 4:
+        return 0xEEEEEEEEu;
+    case 8:
+        return 0xFFFFFFFFu;
+    default:
+        return std::nullopt;
+    }
+}
+static_assert(CmaskColorExpandedValue(1) == 0xFFFFFFFFu);
+static_assert(CmaskColorExpandedValue(2) == 0xDDDDDDDDu);
+static_assert(CmaskColorExpandedValue(4) == 0xEEEEEEEEu);
+static_assert(CmaskColorExpandedValue(8) == 0xFFFFFFFFu);
+
 static constexpr auto ARENA_USAGE =
     vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst |
     vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eStorageBuffer |
@@ -606,7 +625,12 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         NoteHotUse(device_addr, size);
     }
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
-    if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
+    // Metadata surfaces (CMask/HTile) must bypass the stream buffer even when <= STREAM_THRESHOLD
+    // (e.g. 768x432 CMask is ~2.5 KiB) so SynchronizeMemoryFromImage fills expanded metadata.
+    const bool is_meta = !is_written && texture_cache.GetMetaInfo(device_addr).has_value();
+    if (!is_written && !is_meta && size <= STREAM_THRESHOLD &&
+        !IsRegionGpuModified(device_addr, size)) {
+        bool promote_to_arena = false;
         // If this small read-only buffer is already resident and clean in the GPU arena,
         // bind the arena directly to avoid thousands of redundant CPU memcpy calls per frame
         // without causing any upload or renderpass break.
@@ -623,32 +647,91 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
                 }
                 return {fast_arena, fast_arena->Offset(device_addr)};
             }
-        }
-        if (stats) {
-            auto& region = Stats().regions[RegionKey(device_addr)];
-            ++region.stream_count;
-            region.stream_bytes += size;
-        }
-        // gow3: the guest data is copied on a copy thread, started now; submission and
-        // guest-visible fences wait for it (Scheduler::WaitHostCopies).
-        if (!stream_buffer.mapped_data.empty() &&
-            !Gow3Toggle::Disabled(Gow3Toggle::DeferredStreamCopies)) {
-            if (const auto offset = stream_buffer.Reserve(size, instance.UniformMinAlignment())) {
-                SmallGuestCopy({
-                    .run = &RunGuestCopy,
-                    .context = this,
-                    .source = device_addr,
-                    .destination = reinterpret_cast<u64>(stream_buffer.mapped_data.data() + *offset),
-                    .size = size,
-                    .extra = reinterpret_cast<u64>(static_cast<Buffer*>(&stream_buffer)),
-                });
-                return {&stream_buffer, *offset};
+            static const bool promote_static = [] {
+                const char* env = std::getenv("GOW3_PROMOTE_STATIC_BUFFERS");
+                return !env || env[0] != '0';
+            }();
+            if (promote_static && size > 0) {
+                constexpr u16 PromoteThreshold = 16u;
+                constexpr u32 MaxPromotionsPerFrame = 32u;
+                const u64 first_page = device_addr >> 12;
+                const u64 last_page = (device_addr + size - 1) >> 12;
+                bool any_volatile = false;
+                bool ready = true;
+                for (u64 page = first_page; page <= last_page; ++page) {
+                    const size_t idx =
+                        static_cast<size_t>((page * 0x9E3779B97F4A7C15ULL) >> 50) &
+                        (STATIC_PROMO_SLOTS - 1);
+                    auto& slot = static_promo_table[idx];
+                    if (slot.page != page) {
+                        slot = StaticPromoSlot{.page = page, .hits = 1, .state = 0};
+                        ready = false;
+                    } else if (slot.state == 2) {
+                        any_volatile = true;
+                        ready = false;
+                    } else if (slot.state == 1) {
+                        if (IsRegionCpuModified(page << 12, 4096)) {
+                            slot.state = 2;
+                            any_volatile = true;
+                            ready = false;
+                        }
+                    } else {
+                        if (slot.hits < PromoteThreshold) {
+                            ++slot.hits;
+                        }
+                        if (slot.hits < PromoteThreshold) {
+                            ready = false;
+                        }
+                    }
+                }
+                if (ready && !any_volatile) {
+                    const u64 frame = Gow3Stats::gpu_frames.load(std::memory_order_relaxed);
+                    if (frame != promo_frame) {
+                        promo_frame = frame;
+                        promo_frame_count = 0;
+                    }
+                    if (promo_frame_count < MaxPromotionsPerFrame) {
+                        ++promo_frame_count;
+                        for (u64 page = first_page; page <= last_page; ++page) {
+                            const size_t idx =
+                                static_cast<size_t>((page * 0x9E3779B97F4A7C15ULL) >> 50) &
+                                (STATIC_PROMO_SLOTS - 1);
+                            static_promo_table[idx].state = 1;
+                        }
+                        promote_to_arena = true;
+                    }
+                }
             }
         }
-        const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
-        memory->CopySparseMemory(device_addr, data, size);
-        stream_buffer.Commit();
-        return {&stream_buffer, offset};
+        if (!promote_to_arena) {
+            if (stats) {
+                auto& region = Stats().regions[RegionKey(device_addr)];
+                ++region.stream_count;
+                region.stream_bytes += size;
+            }
+            // gow3: the guest data is copied on a copy thread, started now; submission and
+            // guest-visible fences wait for it (Scheduler::WaitHostCopies).
+            if (!stream_buffer.mapped_data.empty() &&
+                !Gow3Toggle::Disabled(Gow3Toggle::DeferredStreamCopies)) {
+                if (const auto offset =
+                        stream_buffer.Reserve(size, instance.UniformMinAlignment())) {
+                    SmallGuestCopy({
+                        .run = &RunGuestCopy,
+                        .context = this,
+                        .source = device_addr,
+                        .destination =
+                            reinterpret_cast<u64>(stream_buffer.mapped_data.data() + *offset),
+                        .size = size,
+                        .extra = reinterpret_cast<u64>(static_cast<Buffer*>(&stream_buffer)),
+                    });
+                    return {&stream_buffer, *offset};
+                }
+            }
+            const auto [data, offset] = stream_buffer.Map(size, instance.UniformMinAlignment());
+            memory->CopySparseMemory(device_addr, data, size);
+            stream_buffer.Commit();
+            return {&stream_buffer, offset};
+        }
     }
     const u64 first_block = device_addr >> block_shift;
     const u64 last_block = (device_addr + size - 1) >> block_shift;
@@ -880,8 +963,8 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
     if (src_buffer) {
         runtime.CopyBuffer(src_buffer, arena, copies);
     }
-    if (is_texel_buffer && !is_written) {
-        return SynchronizeMemoryFromImage(arena, device_addr, size);
+    if (!is_written && (is_texel_buffer || texture_cache.GetMetaInfo(device_addr).has_value())) {
+        return SynchronizeMemoryFromImage(arena, device_addr, size, is_texel_buffer);
     }
     return false;
 }
@@ -968,20 +1051,40 @@ const Buffer* BufferCache::UploadCopies(const Buffer* arena, std::span<vk::Buffe
     return staging.buffer;
 }
 
-bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size) {
-    if (auto type = texture_cache.IsMeta(device_addr)) {
-        if (*type == TextureCache::MetaType::HTile) {
+bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size,
+                                             bool is_texel_buffer) {
+    if (const auto meta = texture_cache.GetMetaInfo(device_addr)) {
+        const u32 fill_size = size & ~3u;
+        if (meta->type == TextureCache::MetaType::HTile) {
             static constexpr u32 ZmaskUncompressed = 0xf;
-            runtime.FillBuffer(arena, arena->Offset(device_addr), size, ZmaskUncompressed);
+            if (fill_size > 0) {
+                runtime.FillBuffer(arena, arena->Offset(device_addr), fill_size, ZmaskUncompressed);
+            }
+            return true;
+        } else if (meta->type == TextureCache::MetaType::CMask) {
+            const auto expanded_value = CmaskColorExpandedValue(meta->num_samples);
+            if (!expanded_value) {
+                LOG_WARNING(Render_Vulkan,
+                            "Unsupported CMask sample count: address={:#x}, size={:#x}, "
+                            "samples={}, owner={}:{}",
+                            device_addr, size, meta->num_samples, meta->owner_id.index,
+                            meta->owner_uid);
+                return false;
+            }
+            if (fill_size > 0) {
+                runtime.FillBuffer(arena, arena->Offset(device_addr), fill_size, *expanded_value);
+            }
             return true;
         } else {
-            // gow3: CMask aliases are hit every frame by GoW 2018; report the first few only.
             static std::atomic<u32> meta_logged{0};
             if (meta_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
                 LOG_WARNING(Render_Vulkan, "Unhandled metadata type {}",
-                            magic_enum::enum_name(*type));
+                            magic_enum::enum_name(meta->type));
             }
         }
+    }
+    if (!is_texel_buffer) {
+        return false;
     }
     // gow3: most texel buffers alias no image; remember misses until images change.
     const u64 generation = texture_cache.RegistryGeneration();

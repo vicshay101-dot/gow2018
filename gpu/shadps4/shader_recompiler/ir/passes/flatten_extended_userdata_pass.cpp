@@ -844,6 +844,8 @@ static bool IsAllowedOffsetInstruction(const IR::Inst* inst) {
     case IR::Opcode::LogicalOr:
     case IR::Opcode::LogicalXor:
     case IR::Opcode::LogicalNot:
+    case IR::Opcode::Phi:
+    case IR::Opcode::ReadFirstLane:
         return true;
     default:
         return false;
@@ -866,6 +868,12 @@ static bool ComputeOffset(Xbyak::CodeGenerator& c, Xbyak::Reg32 reg, PassInfo& p
             return true;
         }
         return false;
+    case IR::Opcode::ReadFirstLane:
+        if (inst->Arg(0).IsImmediate()) {
+            c.mov(reg, inst->Arg(0).U32());
+            return true;
+        }
+        return ComputeOffset(c, reg, pass_info, inst->Arg(0));
     case IR::Opcode::IAdd32:
         ABORT_ON_FAILURE(EmitComputeOffsetIAdd32(c, reg, pass_info, inst));
         return true;
@@ -1079,6 +1087,32 @@ static void DumpSrtChain(const IR::Inst* inst, int depth, int indent) {
 }
 
 static thread_local bool g_suppress_unflattened_log = false;
+static thread_local bool g_allow_dynamic_index_fallback = false;
+static thread_local u32 g_dynamic_fallback_hits = 0;
+
+static bool DependsOnAttribute(const IR::Value& value, int depth,
+                               std::vector<const IR::Inst*>& visited) {
+    if (depth <= 0 || value.IsImmediate()) {
+        return false;
+    }
+    const IR::Inst* inst = value.TryInst();
+    if (!inst) {
+        return false;
+    }
+    if (inst->GetOpcode() == IR::Opcode::GetAttributeU32) {
+        return true;
+    }
+    if (std::find(visited.begin(), visited.end(), inst) != visited.end()) {
+        return false;
+    }
+    visited.push_back(inst);
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        if (DependsOnAttribute(inst->Arg(i), depth - 1, visited)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& off_dw) {
     auto inst = off_dw.Inst();
@@ -1154,8 +1188,19 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         return EmitComputeOffsetOp(p, pass_info, inst, OpBitFieldUExtract, 3);
     case IR::Opcode::BitFieldInsert32:
         return EmitComputeOffsetOp(p, pass_info, inst, OpBitFieldInsert, 4);
-    case IR::Opcode::FindILsb32:
+    case IR::Opcode::FindILsb32: {
+        if (g_allow_dynamic_index_fallback) {
+            std::vector<const IR::Inst*> visited;
+            if (DependsOnAttribute(inst->Arg(0), 24, visited)) {
+                // Only collapse 12-bit tile-mask material lookups (FindILsb32) to table slot 0.
+                // Never collapse direct GetAttributeU32 particle emitter indexing!
+                p.insert(p.end(), {OpImm, 0u});
+                ++g_dynamic_fallback_hits;
+                return true;
+            }
+        }
         return EmitComputeOffsetOp(p, pass_info, inst, OpFindILsb, 1);
+    }
     case IR::Opcode::SelectU32:
     case IR::Opcode::SelectU1:
         return EmitComputeOffsetOp(p, pass_info, inst, OpSelect, 3);
@@ -1189,6 +1234,16 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         ABORT_ON_FAILURE(EmitOperand(p, pass_info, inst->Arg(0)));
         p.insert(p.end(), {OpImm, 0u, OpEq});
         return true;
+    case IR::Opcode::ReadFirstLane:
+        return EmitOperand(p, pass_info, inst->Arg(0));
+    case IR::Opcode::GetAttributeU32:
+        // Direct WorkgroupId/vertex attribute indexing (e.g. particle emitter arrays 38c7b95b)
+        // must not be collapsed to 0, otherwise all workgroups overwrite emitter 0's vertices.
+        if (!g_suppress_unflattened_log) {
+            LogSrtError("Unexpected instruction for offset computation",
+                        magic_enum::enum_name(inst->GetOpcode()));
+        }
+        return false;
     case IR::Opcode::Phi: {
         // gow3: loop/branch merges cannot be walked statically. Take the first operand that can
         // be computed (the value entering the loop); the loop-carried operand loops back here
@@ -1321,6 +1376,31 @@ static void GenerateSrtProgram(Info& info, PassInfo& pass_info) {
         }
         if (!any_unresolved || !any_progress) {
             break;
+        }
+    }
+    static const bool srt_tile_fallback_enabled = [] {
+        const char* env = std::getenv("GOW3_SRT_ATTR_FALLBACK");
+        return !env || env[0] != '0';
+    }();
+    if (any_unresolved && srt_tile_fallback_enabled) {
+        g_allow_dynamic_index_fallback = true;
+        g_dynamic_fallback_hits = 0;
+        for (u32 pass = 0; pass < MaxFlattenPasses; ++pass) {
+            bool any_progress = false;
+            any_unresolved = false;
+            for (const auto& [sgpr_base, root] : pass_info.srt_roots) {
+                VisitPointer(IR::Value(static_cast<u32>(sgpr_base)), root, pass_info, program,
+                             any_progress, any_unresolved, false);
+            }
+            if (!any_unresolved || !any_progress) {
+                break;
+            }
+        }
+        g_allow_dynamic_index_fallback = false;
+        if (g_dynamic_fallback_hits > 0) {
+            std::printf("GOW3_SRT_TILE_FALLBACK: pgm=%#018llx hits=%u unresolved=%d\n",
+                        static_cast<unsigned long long>(info.pgm_hash), g_dynamic_fallback_hits,
+                        any_unresolved ? 1 : 0);
         }
     }
     g_suppress_unflattened_log = prev_suppress;
@@ -1497,10 +1577,9 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
                 }
                 for (size_t arg = cur->NumArgs(); arg--;) {
                     const IR::Value arg_value = cur->Arg(arg);
-                    if (arg_value.IsImmediate()) {
-                        continue;
+                    if (auto* arg_inst = arg_value.TryInst()) {
+                        enqueue(arg_inst);
                     }
-                    enqueue(arg_value.Inst());
                 }
             }
         }
@@ -1512,13 +1591,17 @@ void FlattenExtendedUserdataPass(IR::Program& program) {
             continue;
         }
 
-        IR::Inst* base = inst->Arg(0).Inst();
-        if (auto* inst = base->Arg(0).TryInst();
-            inst && inst->GetOpcode() == IR::Opcode::ReadFirstLane) {
+        IR::Inst* base = inst->Arg(0).TryInst();
+        if (!base || base->NumArgs() < 2) {
             continue;
         }
-        ASSERT_MSG(IsReadConstSource(base->Arg(0)), "ReadConst base low not from constant memory");
-        ASSERT_MSG(IsReadConstSource(base->Arg(1)), "ReadConst base high not from constant memory");
+        if (auto* base_lo = base->Arg(0).TryInst();
+            base_lo && base_lo->GetOpcode() == IR::Opcode::ReadFirstLane) {
+            continue;
+        }
+        if (!IsReadConstSource(base->Arg(0)) || !IsReadConstSource(base->Arg(1))) {
+            continue;
+        }
 
         IR::Inst* ptr_lo = base->Arg(0).Inst();
         ptr_lo = pass_info.DeduplicateInstruction(ptr_lo);

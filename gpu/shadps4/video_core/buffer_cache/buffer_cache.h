@@ -163,7 +163,8 @@ private:
     const Buffer* UploadCopies(const Buffer* arena, std::span<vk::BufferCopy> copies,
                                size_t total_size_bytes);
 
-    bool SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size);
+    bool SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_addr, u32 size,
+                                    bool is_texel_buffer);
 
     const Vulkan::Instance& instance;
     Vulkan::Scheduler& scheduler;
@@ -174,6 +175,18 @@ private:
         u64 generation = ~0ULL;
     };
     std::array<ImageMiss, 256> image_miss_cache{};
+    // gow3: promote repeatedly-streamed static small read-only buffers (<= STREAM_THRESHOLD)
+    // to the GPU arena so subsequent binds hit the zero-copy fast_arena path; any page later
+    // observed CPU-modified is marked volatile (state=2) and stays on stream_buffer.
+    struct StaticPromoSlot {
+        u64 page = 0;
+        u16 hits = 0;
+        u8 state = 0; // 0 = counting, 1 = promoted, 2 = volatile
+    };
+    static constexpr size_t STATIC_PROMO_SLOTS = 16384;
+    std::array<StaticPromoSlot, STATIC_PROMO_SLOTS> static_promo_table{};
+    u64 promo_frame = ~0ULL;
+    u32 promo_frame_count = 0;
     Vulkan::Runtime& runtime;
     Vulkan::StagingBufferPool& staging_pool;
     AmdGpu::Liverpool* liverpool;

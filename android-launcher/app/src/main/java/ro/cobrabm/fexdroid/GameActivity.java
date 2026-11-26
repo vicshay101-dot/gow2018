@@ -510,8 +510,6 @@ public final class GameActivity extends Activity {
             env.put("LD_LIBRARY_PATH",BASE+"/arm64/lib:"+BASE+"/arm64/python/lib");
             env.put("GOW3_PRESENT_SOCKET",BASE+"/present.sock");
             env.put("GOW3_DISPLAY_HZ",String.valueOf(Math.round(getWindowManager().getDefaultDisplay().getRefreshRate())));
-            env.put("GOW3_GPU_PROFILE","1");
-            env.put("GOW3_BUFFER_STATS","1");
             return b.start();
         }
         // Keep native port libraries and rootfs libraries visible to the explicit rootfs loader.

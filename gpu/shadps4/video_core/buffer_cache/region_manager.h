@@ -237,7 +237,7 @@ private:
     static constexpr u8 HotFaults = 2;
     // Upper bound on the global hot set (pages). The opt-in run that grew to ~14k pages (56 MB)
     // re-uploaded all of them on every use; a few thousand pages cover the pages that fault most.
-    static constexpr std::int64_t MaxHotPages = 4096;
+    static constexpr std::int64_t MaxHotPages = 512;
     static constexpr auto HotPeriod = std::chrono::seconds(20);
 
     void CountWriteFaults(size_t start_page, size_t end_page) {

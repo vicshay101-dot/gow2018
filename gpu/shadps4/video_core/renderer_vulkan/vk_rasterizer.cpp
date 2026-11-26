@@ -127,9 +127,8 @@ bool ShouldSkipShadowAtlas(Vulkan::Runtime& runtime, Vulkan::Scheduler& schedule
         if (const char* env = std::getenv("GOW3_SHADOW_RATE")) {
             return static_cast<u32>(std::strtoul(env, nullptr, 10));
         }
-        // The Android port used to skip 3 of 4 shadow atlas updates to save GPU time. That keeps the
-        // atlas frozen between updates and makes the shadows step/flicker as the camera moves, so the
-        // default is no throttle. Set GOW3_SHADOW_RATE=4 to bring the skip back for a performance test.
+        // Keep shadow atlas updates unthrottled by default; skipping frames causes pitch-black
+        // hands/faces and alternating shadow blotches in GoW 2018.
         return 1u;
     }();
     if (rate == 1u) {
