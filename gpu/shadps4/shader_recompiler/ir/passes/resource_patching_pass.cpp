@@ -629,6 +629,42 @@ static bool ExtractTableAddressing(const IR::Value& dw0_val, PendingBindlessReci
     return false;
 }
 
+// The T# is read from a table whose slot is a value the shader computes (a bit-scan loop over a mask,
+// for instance): dw0 = ReadConst(ptr, ((X * stride_bytes) + base_bytes) >> s). X is returned so the
+// backend can use it as the array slot; the table layout comes from ExtractTableAddressing.
+static bool TryMatchValueIndex(const IR::Value& dw0_val, PendingBindlessRecipe& out,
+                               IR::Value& out_x) {
+    const IR::Inst* dw0 = UnwrapPhiInst(dw0_val);
+    if (!dw0 || dw0->GetOpcode() != IR::Opcode::ReadConst || dw0->NumArgs() < 2) {
+        return false;
+    }
+    const IR::Inst* shr = UnwrapPhiInst(dw0->Arg(1));
+    if (!shr || shr->GetOpcode() != IR::Opcode::ShiftRightLogical32 || shr->NumArgs() < 2 ||
+        !shr->Arg(1).IsImmediate() || shr->Arg(1).Type() != IR::Type::U32) {
+        return false;
+    }
+    IR::Value mul_val;
+    [[maybe_unused]] u32 base_bytes = 0;
+    if (!MatchCommutativeImm(UnwrapPhiInst(shr->Arg(0)), IR::Opcode::IAdd32, mul_val, base_bytes)) {
+        return false;
+    }
+    IR::Value x_val;
+    u32 stride_bytes = 0;
+    if (!MatchCommutativeImm(UnwrapPhiInst(mul_val), IR::Opcode::IMul32, x_val, stride_bytes)) {
+        return false;
+    }
+    if (stride_bytes == 0 || x_val.IsImmediate() || x_val.Type() != IR::Type::U32) {
+        return false;
+    }
+    const IR::Inst* x_inst = UnwrapPhiInst(x_val);
+    if (!x_inst) {
+        return false;
+    }
+    out.index_inst = x_inst;
+    out_x = x_val;
+    return true;
+}
+
 static void DumpProbeTree(u64 pgm_hash, const IR::Value& value, int depth, int indent) {
     if (value.IsImmediate()) {
         if (value.Type() == IR::Type::U32) {
@@ -795,15 +831,34 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
                 }
             }
         }
+        bool value_ok = false;
+        if (!table_ok && profile.supports_bindless_images) {
+            PendingBindlessRecipe pending{};
+            IR::Value x_val;
+            if (TryMatchValueIndex(resource.sharps[0].dwords[0], pending, x_val) &&
+                ExtractTableAddressing(resource.sharps[0].dwords[0], pending) &&
+                !pending.recipe.table_is_buffer && pending.recipe.table_stride_dw != 0) {
+                pending.recipe.image_binding = image_binding;
+                pending.recipe.index_is_value = true;
+                pending.recipe.valid = true;
+                if (!info.FindBindlessImageRecipe(image_binding)) {
+                    info.bindless_image_recipes.push_back(pending.recipe);
+                }
+                IR::IREmitter hint{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
+                hint.BindlessImageIndex(image_binding, IR::U32{x_val});
+                value_ok = true;
+            }
+        }
         if (const IR::Inst* dw0 = resource.sharps[0].dwords[0].TryInst()) {
             first_op = static_cast<u32>(dw0->GetOpcode());
         }
-        std::printf("BINDLESS_PROBE pgm=%#018llx supported=%d written=%d chain=%d table=%d dw0_op=%u\n",
+        std::printf("BINDLESS_PROBE pgm=%#018llx supported=%d written=%d chain=%d table=%d value=%d "
+                    "dw0_op=%u\n",
                     static_cast<unsigned long long>(info.pgm_hash),
                     profile.supports_bindless_images ? 1 : 0, is_written ? 1 : 0,
-                    chain_found ? 1 : 0, table_ok ? 1 : 0, first_op);
+                    chain_found ? 1 : 0, table_ok ? 1 : 0, value_ok ? 1 : 0, first_op);
         static thread_local u64 last_dumped = 0;
-        if (chain_found && !table_ok && last_dumped != info.pgm_hash) {
+        if (chain_found && !table_ok && !value_ok && last_dumped != info.pgm_hash) {
             last_dumped = info.pgm_hash;
             DumpProbeTree(info.pgm_hash, resource.sharps[0].dwords[0], 7, 0);
         }

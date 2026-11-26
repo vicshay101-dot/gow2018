@@ -298,6 +298,9 @@ public:
     Id bindless_image_type{};
     Id bindless_storage_id{};
     Id bindless_storage_type{};
+    // Slot of the bindless array chosen by the shader's own value, per image binding. Set by
+    // BindlessImageIndex right before the access that reads it.
+    std::unordered_map<u32, Id> bindless_index_by_image;
 
     Id shared_memory_u16{};
     Id shared_memory_u32{};

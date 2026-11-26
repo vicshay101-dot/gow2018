@@ -276,6 +276,7 @@ struct Info : InfoPersistent {
         u32 v_ud_lo{};
         u32 v_ud_hi{};
         u32 v_idx[4]{};
+        bool index_is_value{false}; // slot is a value the shader computes (BindlessImageIndex)
     };
     boost::container::small_vector<BindlessImageRecipe, 4> bindless_image_recipes;
 

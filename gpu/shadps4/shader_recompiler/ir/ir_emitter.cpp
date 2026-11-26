@@ -2214,6 +2214,10 @@ void IREmitter::DebugPrint(const char* fmt, boost::container::small_vector<Value
     Inst(Opcode::DebugPrint, Flags{flags}, fmt_val, args[0], args[1], args[2], args[3]);
 }
 
+void IREmitter::BindlessImageIndex(u32 image_binding, const U32& index) {
+    Inst(Opcode::BindlessImageIndex, Imm32(image_binding), index);
+}
+
 void IREmitter::EmitVertex() {
     Inst(Opcode::EmitVertex);
 }

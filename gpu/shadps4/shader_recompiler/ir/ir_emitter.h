@@ -41,6 +41,8 @@ public:
     void Discard();
     void Discard(const U1& cond);
     void DebugPrint(const char* fmt, boost::container::small_vector<Value, 5> args);
+    // Tells the backend which bindless-array slot the next image access of `image_binding` uses.
+    void BindlessImageIndex(u32 image_binding, const U32& index);
 
     void Barrier();
     void WorkgroupMemoryBarrier();

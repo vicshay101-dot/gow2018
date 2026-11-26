@@ -432,6 +432,7 @@ OPCODE(ImageQueryLod,                                       F32x4,          Opaq
 OPCODE(ImageGradient,                                       F32x4,          Opaque,         Opaque,         Opaque,         Opaque,         Opaque,         F32,          )
 OPCODE(ImageRead,                                           F32x4,          Opaque,         Opaque,         U32,            U32,                            )
 OPCODE(ImageWrite,                                          Void,           Opaque,         Opaque,         U32,            U32,            F32x4,          )
+OPCODE(BindlessImageIndex,                                 Void,           U32,            U32,                                            )
 
 // Image atomic operations
 OPCODE(ImageAtomicIAdd32,                                   U32,            Opaque,         Opaque,         U32,                                            )
