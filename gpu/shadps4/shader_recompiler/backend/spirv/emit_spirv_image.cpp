@@ -12,6 +12,15 @@
 
 namespace Shader::Backend::SPIRV {
 
+// R of the bindless index when the CPU read it: its bits travel in PushData::xoffset, which only the
+// graphics path uses, so compute dispatches can reuse the slot.
+static Id EmitBindlessRValue(EmitContext& ctx) {
+    const Id f32_ptr = ctx.OpAccessChain(ctx.TypePointer(spv::StorageClass::PushConstant, ctx.F32[1]),
+                                         ctx.push_data_block,
+                                         ctx.ConstU32(PushData::XOffsetIndex));
+    return ctx.OpBitcast(ctx.U32[1], ctx.OpLoad(ctx.F32[1], f32_ptr));
+}
+
 // Index of the bindless array for one access: the chain from the IR, computed in the shader.
 static Id ComputeBindlessIndex(EmitContext& ctx, const Info::BindlessImageRecipe& recipe) {
     static std::mutex log_mutex;
@@ -24,7 +33,9 @@ static Id ComputeBindlessIndex(EmitContext& ctx, const Info::BindlessImageRecipe
                         recipe.m2, recipe.s);
         }
     }
-    const Id r_id = EmitReadConstBuffer(ctx, recipe.r_buffer_handle, ctx.ConstU32(recipe.r_offset));
+    const Id r_id = recipe.r_from_memory
+                        ? EmitBindlessRValue(ctx)
+                        : EmitReadConstBuffer(ctx, recipe.r_buffer_handle, ctx.ConstU32(recipe.r_offset));
     const Id w_id = EmitGetAttributeU32(ctx, IR::Attribute::WorkgroupId, recipe.workgroup_comp);
     const Id add1 = ctx.OpIAdd(ctx.U32[1], r_id, w_id);
     const Id mul1 = ctx.OpIMul(ctx.U32[1], add1, ctx.ConstU32(recipe.m1));

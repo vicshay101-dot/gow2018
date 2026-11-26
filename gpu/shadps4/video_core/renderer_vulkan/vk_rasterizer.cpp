@@ -1930,6 +1930,36 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
                 table_base_addr =
                     (static_cast<u64>(lo) | (static_cast<u64>(hi) << 32)) & 0xFFFFFFFFFFFFULL;
             }
+            if (recipe.r_from_memory) {
+                // R = dword r_offset of the buffer whose V# sits in memory at the user-data pointer.
+                // Constant for the whole dispatch: only WorkgroupId varies, and the shader adds it.
+                const u32 v_lo = cs_stage->ReadUdSharp<u32>(recipe.v_ud_lo);
+                const u32 v_hi = cs_stage->ReadUdSharp<u32>(recipe.v_ud_hi);
+                const VAddr v_ptr =
+                    (static_cast<u64>(v_lo) | (static_cast<u64>(v_hi) << 32)) & 0xFFFFFFFFFFFFULL;
+                u32 r_value = 0;
+                bool r_ok = v_ptr != 0;
+                u32 vdw[4]{};
+                for (u32 k = 0; k < 4 && r_ok; ++k) {
+                    const VAddr a = v_ptr + static_cast<u64>(recipe.v_idx[k]) * 4ULL;
+                    if (!memory->IsValidGpuMapping(a, sizeof(u32))) {
+                        r_ok = false;
+                        break;
+                    }
+                    std::memcpy(&vdw[k], reinterpret_cast<const void*>(a), sizeof(u32));
+                }
+                if (r_ok) {
+                    const VAddr buf_base =
+                        static_cast<u64>(vdw[0]) | (static_cast<u64>(vdw[1] & 0xFFFFu) << 32);
+                    const VAddr r_addr = buf_base + static_cast<u64>(recipe.r_offset) * 4ULL;
+                    if (memory->IsValidGpuMapping(r_addr, sizeof(u32))) {
+                        std::memcpy(&r_value, reinterpret_cast<const void*>(r_addr), sizeof(u32));
+                    }
+                }
+                float r_bits{};
+                std::memcpy(&r_bits, &r_value, sizeof(float));
+                push_data.xoffset = r_bits;
+            }
             // Resolves one T# to a view the array can hold. The same path serves the table entries
             // and the fallback, so an unfilled slot never holds a null descriptor (that needs the
             // nullDescriptor feature, which is not requested).

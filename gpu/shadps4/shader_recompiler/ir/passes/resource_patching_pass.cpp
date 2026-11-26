@@ -418,6 +418,53 @@ static bool MatchRWAdd(const IR::Inst* add1, const IR::Inst*& out_r, u32& out_r_
     return check_pair(lhs, rhs) || check_pair(rhs, lhs);
 }
 
+// Reads the V# of R when it is built from memory loads: CompositeConstructU32x4 of four ReadConst,
+// each ReadConst(CompositeConstructU32x2(GetUserData lo, GetUserData hi), dword index).
+static bool ExtractVSharpSource(const IR::Value& value, Info::BindlessImageRecipe& out) {
+    const IR::Inst* comp = value.TryInst();
+    if (!comp || comp->GetOpcode() != IR::Opcode::CompositeConstructU32x4 || comp->NumArgs() != 4) {
+        return false;
+    }
+    u32 ud_lo = 0;
+    u32 ud_hi = 0;
+    for (size_t k = 0; k < 4; ++k) {
+        const IR::Inst* rc = comp->Arg(k).TryInst();
+        if (!rc || rc->GetOpcode() != IR::Opcode::ReadConst || rc->NumArgs() < 2) {
+            return false;
+        }
+        if (!rc->Arg(1).IsImmediate() || rc->Arg(1).Type() != IR::Type::U32) {
+            return false;
+        }
+        const IR::Inst* ptr = rc->Arg(0).TryInst();
+        if (!ptr || ptr->GetOpcode() != IR::Opcode::CompositeConstructU32x2 || ptr->NumArgs() < 2) {
+            return false;
+        }
+        const IR::Inst* lo_i = ptr->Arg(0).TryInst();
+        const IR::Inst* hi_i = ptr->Arg(1).TryInst();
+        if (!lo_i || !hi_i || lo_i->GetOpcode() != IR::Opcode::GetUserData ||
+            hi_i->GetOpcode() != IR::Opcode::GetUserData || lo_i->NumArgs() < 1 ||
+            hi_i->NumArgs() < 1) {
+            return false;
+        }
+        if (!lo_i->Arg(0).IsImmediate() || lo_i->Arg(0).Type() != IR::Type::U32 ||
+            !hi_i->Arg(0).IsImmediate() || hi_i->Arg(0).Type() != IR::Type::U32) {
+            return false;
+        }
+        const u32 lo = lo_i->Arg(0).U32();
+        const u32 hi = hi_i->Arg(0).U32();
+        if (k == 0) {
+            ud_lo = lo;
+            ud_hi = hi;
+        } else if (lo != ud_lo || hi != ud_hi) {
+            return false;
+        }
+        out.v_idx[k] = rc->Arg(1).U32();
+    }
+    out.v_ud_lo = ud_lo;
+    out.v_ud_hi = ud_hi;
+    return true;
+}
+
 static bool TryMatchIndexChain(const IR::Inst* inst, PendingBindlessRecipe& out) {
     if (!inst || inst->GetOpcode() != IR::Opcode::ShiftRightLogical32 || inst->NumArgs() < 2) {
         return false;
@@ -1374,9 +1421,15 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
         }
     }
     for (auto& pending : pending_bindless) {
-        if (pending.r_inst && pending.r_inst->Arg(0).IsImmediate() &&
-            pending.r_inst->Arg(0).Type() == IR::Type::U32) {
-            pending.recipe.r_buffer_handle = pending.r_inst->Arg(0).U32();
+        const bool immediate_handle = pending.r_inst && pending.r_inst->Arg(0).IsImmediate() &&
+                                      pending.r_inst->Arg(0).Type() == IR::Type::U32;
+        const bool memory_handle = !immediate_handle && pending.r_inst &&
+                                   ExtractVSharpSource(pending.r_inst->Arg(0), pending.recipe);
+        if (immediate_handle || memory_handle) {
+            pending.recipe.r_from_memory = memory_handle;
+            if (immediate_handle) {
+                pending.recipe.r_buffer_handle = pending.r_inst->Arg(0).U32();
+            }
             if (pending.recipe.table_is_buffer) {
                 if (!pending.table_buf_inst || !pending.table_buf_inst->Arg(0).IsImmediate() ||
                     pending.table_buf_inst->Arg(0).Type() != IR::Type::U32) {

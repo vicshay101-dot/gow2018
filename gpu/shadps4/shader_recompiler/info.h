@@ -272,6 +272,10 @@ struct Info : InfoPersistent {
         u32 table_base_dw{};
         u32 table_stride_dw{8};
         bool valid{false};
+        bool r_from_memory{false}; // R comes from a V# built from memory loads (CPU reads it at bind)
+        u32 v_ud_lo{};
+        u32 v_ud_hi{};
+        u32 v_idx[4]{};
     };
     boost::container::small_vector<BindlessImageRecipe, 4> bindless_image_recipes;
 
