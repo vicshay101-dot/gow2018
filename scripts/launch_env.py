@@ -146,7 +146,11 @@ def derive(game, config, state_path, env):
         updates['GOW3_READBACK_LINEAR'] = '0'
         updates['GOW3_SCREEN_W'] = env.get('GOW3_SCREEN_W', default_w)
         updates['GOW3_SCREEN_H'] = env.get('GOW3_SCREEN_H', default_h)
-        updates['GOW3_HOT_PAGES'] = env.get('GOW3_HOT_PAGES', '0')
+        updates['GOW3_HOT_PAGES'] = env.get('GOW3_HOT_PAGES', '1')
+        updates['GOW3_SHADOW_RATE'] = env.get('GOW3_SHADOW_RATE', '0' if not shadows_enabled else '1')
+        updates['GOW3_VOLFOG_RATE'] = env.get('GOW3_VOLFOG_RATE', '3')
+        updates['GOW3_VOL3D_RATE'] = env.get('GOW3_VOL3D_RATE', '3')
+        updates['GOW3_DESCRIPTOR_TEMPLATE'] = env.get('GOW3_DESCRIPTOR_TEMPLATE', '1')
         updates['GOW3_PREP_WORKERS'] = env.get('GOW3_PREP_WORKERS', '2')
         updates['GOW3_FAULT_WINDOW'] = '1024'
         updates['GOW3_COPY_GPU_BUFFERS'] = '1'
