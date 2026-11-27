@@ -592,12 +592,9 @@ bool Rasterizer::DrawPipeWanted() {
     if (env && env[0]) {
         return env[0] == '1';
     }
-    // BACHATA 025's ordinary Vulkan draw path does not require the GoW3
-    // speculative draw pipeline. The port's draw-pipe speedup was measured
-    // on desktop cores, not a heterogeneous 8-core Android SoC. Prefer the
-    // deterministic direct path for Android; GOW3_DRAW_PIPE=1 (handled above)
-    // enables the existing path for matched-scene A/B measurement.
-    if (std::getenv("GOW3_ANDROID_PORT")) return false;
+    // Android (8-core SoC): the GPU command thread was measured saturated (idle 0.1%,
+    // ~25 us/draw x ~3300 draws/frame, process CPU only ~200% of 800%), so the two-stage
+    // pipeline is on by default there as well. GOW3_DRAW_PIPE=0 selects the direct path.
     return Gow3Threads::Available() >= 8;
 }
 

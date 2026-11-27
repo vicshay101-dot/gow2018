@@ -160,7 +160,7 @@ if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow
     export GOW3_DESCRIPTOR_TEMPLATE=${GOW3_DESCRIPTOR_TEMPLATE:-1}
     export TU_DEBUG=${TU_DEBUG:-sysmem}
     export GOW3_ADPF=${GOW3_ADPF:-1}
-    export GOW3_DRAW_PIPE=${GOW3_DRAW_PIPE:-0}
+    export GOW3_DRAW_PIPE=${GOW3_DRAW_PIPE:-1}
     export GOW3_COALESCE_COMPUTE_BARRIERS=${GOW3_COALESCE_COMPUTE_BARRIERS:-1}
     export GOW3_READBACK_LINEAR=${GOW3_READBACK_LINEAR:-0}
     export GOW3_DEFERRED_READBACK=${GOW3_DEFERRED_READBACK:-0}
@@ -184,7 +184,7 @@ fi
 [ -f "$base/gow3.env" ] && . "$base/gow3.env"
 [ -r /storage/emulated/0/Download/Logs/gow3.env ] && . /storage/emulated/0/Download/Logs/gow3.env
 
-echo "GOW3_NATIVE_RESOLUTION: status=${GOW3_RESOLUTION_STATUS:-unknown} eboot_res=${GOW3_GOW2018_EBOOT_RES:-0}(${GOW3_PATCH_INPUT_RES:-native}) screen=${GOW3_SCREEN_W:-0}x${GOW3_SCREEN_H:-0} readbacks=${GOW3_READBACKS:-1} async_buf=${GOW3_ASYNC_BUFFER_READBACK:-0} draw_pipe=${GOW3_DRAW_PIPE:-0} cs_coalesce=${GOW3_COALESCE_COMPUTE_BARRIERS:-0} hot_pages=${GOW3_HOT_PAGES:-0} prep=${GOW3_PREP_WORKERS:-0}"
+echo "GOW3_NATIVE_RESOLUTION: status=${GOW3_RESOLUTION_STATUS:-unknown} eboot_res=${GOW3_GOW2018_EBOOT_RES:-0}(${GOW3_PATCH_INPUT_RES:-native}) screen=${GOW3_SCREEN_W:-0}x${GOW3_SCREEN_H:-0} readbacks=${GOW3_READBACKS:-1} async_buf=${GOW3_ASYNC_BUFFER_READBACK:-0} draw_pipe=${GOW3_DRAW_PIPE:-1} cs_coalesce=${GOW3_COALESCE_COMPUTE_BARRIERS:-0} hot_pages=${GOW3_HOT_PAGES:-0} prep=${GOW3_PREP_WORKERS:-0}"
 echo "Game language: system_param=${GOW3_LANGUAGE:-1} (1=English, 7=Portuguese, 17=Portuguese-Brazil)"
 
 # Memory pool & refresh
