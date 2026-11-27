@@ -136,6 +136,7 @@ FastKind ClassifyFastKind(const char* name) {
         if (std::strcmp(name, s) == 0) return FastKind::Int0;
     }
 
+    // Strictly <= 6 integer/pointer arguments and integer/pointer/void return (no stack args).
     static constexpr const char* kInt6[] = {
         "scePthreadMutexLock",
         "scePthreadMutexUnlock",
@@ -210,11 +211,6 @@ FastKind ClassifyFastKind(const char* name) {
         "sceGnmDrawIndex",
         "sceGnmDrawIndexAuto",
         "sceGnmDrawIndexOffset",
-        "sceGnmDrawIndexIndirect",
-        "sceGnmDrawIndexIndirectCountMulti",
-        "sceGnmDrawIndexMultiInstanced",
-        "sceGnmDrawIndirect",
-        "sceGnmDrawIndirectCountMulti",
         "sceGnmDispatchDirect",
         "sceGnmDispatchIndirect",
         "sceGnmDispatchIndirectOnMec",
@@ -225,9 +221,7 @@ FastKind ClassifyFastKind(const char* name) {
         "sceGnmDingDong",
         "sceGnmComputeWaitOnAddress",
         "sceGnmSubmitCommandBuffers",
-        "sceGnmSubmitAndFlipCommandBuffers",
         "sceGnmSubmitCommandBuffersForWorkload",
-        "sceGnmSubmitAndFlipCommandBuffersForWorkload",
         "sceGnmInsertDingDongMarker",
         "sceGnmDingDongForWorkload",
         "sceGnmBeginWorkload",
