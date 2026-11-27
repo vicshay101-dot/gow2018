@@ -1629,8 +1629,8 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             } else {
                 std::memcpy(&regs.reg_array[Regs::ShRegWordOffset + set_data->reg_offset],
                             header + 2, set_size);
-                pipe_dirty.MarkWords(Regs::ShRegWordOffset + set_data->reg_offset,
-                                     header->type3.NumWords() - 1);
+                pipe_dirty.Mark(Regs::ShRegWordOffset + set_data->reg_offset,
+                                header->type3.NumWords() - 1);
                 // gow3: interleaves with the graphics stream at an unpredictable point, so
                 // draw-preparation workers cannot reproduce it: make their checksums differ.
                 gfx_reg_checksum = HashRegisterPacket(gfx_reg_checksum ^ 0xA5C0A5C0A5C0ull,
