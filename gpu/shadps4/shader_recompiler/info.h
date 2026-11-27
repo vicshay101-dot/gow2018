@@ -256,6 +256,39 @@ struct Info : InfoPersistent {
                sizeof(tess_constants));
     }
 
+    struct BindlessImageRecipe {
+        u32 image_binding{};
+        u32 r_buffer_handle{};
+        u32 r_offset{};
+        u32 workgroup_comp{};
+        u32 m1{};
+        u32 c2{};
+        u32 m2{};
+        u32 s{};
+        bool table_is_buffer{false};
+        u32 table_buf_handle{};
+        u32 table_ptr_lo_dw{};
+        u32 table_ptr_hi_dw{};
+        u32 table_base_dw{};
+        u32 table_stride_dw{8};
+        bool valid{false};
+        bool r_from_memory{false}; // R comes from a V# built from memory loads (CPU reads it at bind)
+        u32 v_ud_lo{};
+        u32 v_ud_hi{};
+        u32 v_idx[4]{};
+        bool index_is_value{false}; // slot is a value the shader computes (BindlessImageIndex)
+    };
+    boost::container::small_vector<BindlessImageRecipe, 4> bindless_image_recipes;
+
+    const BindlessImageRecipe* FindBindlessImageRecipe(u32 image_binding) const {
+        for (const auto& r : bindless_image_recipes) {
+            if (r.image_binding == image_binding) {
+                return &r;
+            }
+        }
+        return nullptr;
+    }
+
     void Serialize(Serialization::Archive& ar) const;
     bool Deserialize(Serialization::Archive& ar);
 };

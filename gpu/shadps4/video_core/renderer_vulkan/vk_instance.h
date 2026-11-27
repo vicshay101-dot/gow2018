@@ -320,6 +320,9 @@ public:
         return shader_clock && shader_clock_features.shaderSubgroupClock;
     }
 
+    /// Returns true when bindless sampled image arrays with non-uniform indexing are supported.
+    bool IsBindlessImagesSupported() const;
+
     /// Returns the vendor ID of the physical device
     u32 GetVendorID() const {
         return properties.vendorID;

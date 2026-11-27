@@ -11,6 +11,11 @@ enum SrtOp : std::uint32_t {
     OpImm, OpAdd, OpSub, OpMul, OpShl, OpShr, OpAnd, OpOr, OpXor, OpNot,
     OpUMin, OpUMax, OpBitFieldUExtract, OpFindILsb,
     OpBitFieldInsert, OpSelect, OpEq, OpNe, OpULt, OpULe, OpSLt, OpSLe,
+    // gow2018: dynamic guest-memory load. Pops dword offset, address hi, address lo
+    // (in that order) and pushes the u32 read from (hi:lo) + off_dw * 4. Lets the
+    // walker resolve offsets that depend on ReadConst/ReadConstBuffer values that
+    // were never flattened into the flat buffer.
+    OpLoad32,
 };
 constexpr std::uint32_t OpZeroed = 0x80000000u, SrtMagic = 0x42545253u;
 constexpr std::uint32_t MaxDepth = 64, MaxValues = 32;
@@ -132,6 +137,22 @@ inline std::vector<std::uint32_t> Compile(std::span<const std::uint32_t> program
             load(5, --count); load(4, --count); load(3, count - 1);
             emit(0x7100007fu); // cmp w3, #0
             emit(0x1a851083u); // csel w3, w4, w5, ne
+            store(3, count - 1);
+        } else if (op == OpLoad32) {
+            // gow2018 dynamic guest load: pops off_dw (top), hi, lo; pushes u32 at
+            // (hi:lo) + off_dw * 4. Guards small/null addresses like OpCopyImm.
+            if (count < 3) return {};
+            load(4, --count);        // off_dw
+            load(5, --count);        // addr hi
+            load(6, count - 1);      // addr lo
+            emit(0xd3607ca5u);       // lsl x5, x5, #32
+            emit(0xaa0600a5u);       // orr x5, x5, x6
+            emit(0x0b040084u);       // add w4, w4, w4
+            emit(0x0b040084u);       // add w4, w4, w4 (off_dw * 4)
+            emit(0x52800003u);       // mov w3, #0
+            emit(0xf14004bfu);       // cmp x5, #0x1000
+            emit(0x54000043u);       // b.lo +8 (skip ldr)
+            emit(0xb86468a3u);       // ldr w3, [x5, w4, uxtw]
             store(3, count - 1);
         } else {
             if (count < 2) return {};

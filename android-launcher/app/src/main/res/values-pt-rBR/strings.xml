@@ -207,8 +207,10 @@
     <string name="patch_particles">Desativar partículas suaves</string>
     <string name="patch_save_failed">Não foi possível salvar os patches.</string>
     <string name="patch_effect_note">Os patches de efeitos não estão disponíveis para God of War (2018).</string>
-    <string name="gpu_driver_adreno7xx">Turnip 26.3 R6 (Adreno 7xx)</string>
+    <string name="gpu_driver_adreno7xx">Turnip 27.0.0-R3 (Adreno 7xx)</string>
     <string name="param_expand_video_arena">Aumentar arena de vídeo</string>
     <string name="param_desc_expand_video_arena">Aumenta a arena de vídeo do jogo independentemente da resolução. Desativado mantém a arena original e pode causar erros de textura ou falhas, especialmente em resoluções maiores. Requer reiniciar.</string>
     <string name="contact_bionic_label">Runtime Android/Bionic</string>
+    <string name="home_swap_rb">Inverter vermelho e azul (R/B)</string>
+    <string name="home_swap_rb_hint">Use se as cores do jogo estiverem invertidas com seu driver. Vale no próximo início do jogo.</string>
 </resources>

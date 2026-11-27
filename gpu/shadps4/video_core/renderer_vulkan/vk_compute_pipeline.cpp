@@ -31,8 +31,10 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         .pName = "main",
     };
 
+    const bool bindless_images = instance.IsBindlessImagesSupported();
     u32 binding{};
     boost::container::small_vector<vk::DescriptorSetLayoutBinding, 32> bindings;
+    boost::container::small_vector<vk::DescriptorBindingFlags, 32> binding_flags;
     for (const auto& buffer : info->buffers) {
         // During deserialization, we don't have access to the UD to fetch sharp data. To address
         // this properly we need to track shaprs or portion of them in `sdata`, but since we're
@@ -45,6 +47,7 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
             .descriptorCount = 1,
             .stageFlags = vk::ShaderStageFlagBits::eCompute,
         });
+        binding_flags.push_back({});
     }
     for (const auto& image : info->images) {
         const u32 num_bindings = image.NumBindings(*info);
@@ -55,6 +58,7 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
             .descriptorCount = num_bindings,
             .stageFlags = vk::ShaderStageFlagBits::eCompute,
         });
+        binding_flags.push_back({});
         binding += num_bindings;
     }
     for (const auto& sampler : info->samplers) {
@@ -64,6 +68,28 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
             .descriptorCount = 1,
             .stageFlags = vk::ShaderStageFlagBits::eCompute,
         });
+        binding_flags.push_back({});
+    }
+    if (bindless_images) {
+        bindings.push_back({
+            .binding = binding,
+            .descriptorType = vk::DescriptorType::eSampledImage,
+            .descriptorCount = 64,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+        });
+        binding_flags.push_back(vk::DescriptorBindingFlagBits::ePartiallyBound);
+        binding += 1;
+    }
+
+    if (bindless_images) {
+        bindings.push_back({
+            .binding = binding,
+            .descriptorType = vk::DescriptorType::eStorageImage,
+            .descriptorCount = 64,
+            .stageFlags = vk::ShaderStageFlagBits::eCompute,
+        });
+        binding_flags.push_back(vk::DescriptorBindingFlagBits::ePartiallyBound);
+        binding += 1;
     }
 
     const vk::PushConstantRange push_constants = {
@@ -72,11 +98,16 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         .size = sizeof(Shader::PushData),
     };
 
-    uses_push_descriptors = binding < instance.MaxPushDescriptors();
+    uses_push_descriptors = !bindless_images && binding < instance.MaxPushDescriptors();
     const auto flags = uses_push_descriptors
                            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
                            : vk::DescriptorSetLayoutCreateFlagBits{};
+    const vk::DescriptorSetLayoutBindingFlagsCreateInfo binding_flags_ci = {
+        .bindingCount = static_cast<u32>(binding_flags.size()),
+        .pBindingFlags = binding_flags.data(),
+    };
     const vk::DescriptorSetLayoutCreateInfo desc_layout_ci = {
+        .pNext = bindless_images ? &binding_flags_ci : nullptr,
         .flags = flags,
         .bindingCount = static_cast<u32>(bindings.size()),
         .pBindings = bindings.data(),

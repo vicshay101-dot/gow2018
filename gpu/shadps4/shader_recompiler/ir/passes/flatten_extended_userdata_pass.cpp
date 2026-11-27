@@ -390,6 +390,24 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
             cond = cond ? true_val : false_val;
             break;
         }
+        case OpLoad32: {
+            // gow2018 dynamic fallback: load a u32 straight from guest memory.
+            // Stack order pushed by the emitter: lo, hi, off_dw (off on top).
+            const u32 off_dw = values[--count];
+            const u32 hi = values[--count];
+            const u32 lo = values[--count];
+            const u64 addr = (static_cast<u64>(hi) << 32 | lo) +
+                             (static_cast<u64>(off_dw) << 2);
+            u32 value = 0;
+            if (!zeroed && addr >= 0x10000ULL) {
+                fault_pc = op_pc;
+                fault_addr = addr;
+                fault_off = off_dw;
+                std::memcpy(&value, reinterpret_cast<const void*>(addr), sizeof(value));
+            }
+            values[count++] = value;
+            break;
+        }
         default: {
             const u32 b = values[--count];
             u32& a = values[count - 1];
@@ -1146,22 +1164,58 @@ static bool ComputeOffset(SrtProgram& p, PassInfo& pass_info, const IR::Value& o
         p.insert(p.end(), {OpUserData, static_cast<u32>(inst->Arg(0).ScalarReg())});
         return true;
     case IR::Opcode::ReadConst:
-    case IR::Opcode::ReadConstBuffer:
+    case IR::Opcode::ReadConstBuffer: {
         if (u16 offset = GetFlatbufOffset(pass_info.DeduplicateInstruction(inst)); offset != 0) {
             p.insert(p.end(), {OpFlat, offset});
             return true;
         }
-        if (!g_suppress_unflattened_log) {
-            // gow3: the dependency is not flattened (yet): name it so the log shows the cause.
-            LogSrtError("Offset depends on unflattened", magic_enum::enum_name(inst->GetOpcode()));
-            static thread_local std::vector<u64> dumped_shaders;
-            if (std::find(dumped_shaders.begin(), dumped_shaders.end(), g_srt_pgm_hash) ==
-                dumped_shaders.end()) {
-                dumped_shaders.push_back(g_srt_pgm_hash);
-                DumpSrtChain(inst, 6, 0);
+        // gow2018 dynamic fallback: this read was never flattened into the flat buffer
+        // (it is not reachable as an SRT pointer subtree), but the walker runs on the CPU
+        // with the guest address space mapped. Emit a dynamic guest load of the value:
+        // push base lo, base hi, offset, then OpLoad32. This fixes shaders whose SRT
+        // offsets depend on descriptor contents (e.g. terrain/ground draws reading a
+        // buffer pointer stored inside another buffer), which previously aborted the
+        // whole flatten pass and left those draws with garbage descriptors.
+        static thread_local u32 dyn_load_depth = 0;
+        if (dyn_load_depth >= 4) {
+            if (!g_suppress_unflattened_log) {
+                LogSrtError("Offset depends on unflattened",
+                            magic_enum::enum_name(inst->GetOpcode()));
             }
+            return false;
         }
-        return false;
+        IR::Inst* base = inst->Arg(0).Inst();
+        if (!base || base->NumArgs() < 2) {
+            return false;
+        }
+        // ReadConst carries a 64-bit address pair; ReadConstBuffer carries a 128-bit
+        // descriptor whose low 64 bits are the buffer base address.
+        const IR::Value& lo = base->Arg(0);
+        const IR::Value& hi = base->Arg(1);
+        struct DepthGuard {
+            u32& depth;
+            explicit DepthGuard(u32& d) : depth(d) { ++depth; }
+            ~DepthGuard() { --depth; }
+        } guard{dyn_load_depth};
+        SrtProgram dyn;
+        if (!EmitOperand(dyn, pass_info, lo) || !EmitOperand(dyn, pass_info, hi) ||
+            !EmitOperand(dyn, pass_info, inst->Arg(1))) {
+            if (!g_suppress_unflattened_log) {
+                LogSrtError("Offset depends on unflattened",
+                            magic_enum::enum_name(inst->GetOpcode()));
+                static thread_local std::vector<u64> dumped_shaders;
+                if (std::find(dumped_shaders.begin(), dumped_shaders.end(), g_srt_pgm_hash) ==
+                    dumped_shaders.end()) {
+                    dumped_shaders.push_back(g_srt_pgm_hash);
+                    DumpSrtChain(inst, 6, 0);
+                }
+            }
+            return false;
+        }
+        p.insert(p.end(), dyn.begin(), dyn.end());
+        p.push_back(OpLoad32);
+        return true;
+    }
     case IR::Opcode::IAdd32: return EmitComputeOffsetOp(p, pass_info, inst, OpAdd, 2);
     case IR::Opcode::ISub32: return EmitComputeOffsetOp(p, pass_info, inst, OpSub, 2);
     case IR::Opcode::IMul32: return EmitComputeOffsetOp(p, pass_info, inst, OpMul, 2);
