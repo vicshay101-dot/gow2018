@@ -33,6 +33,12 @@ void guest_cpu_thread_end(void) {}
 uintptr_t guest_cpu_return_address(uintptr_t native) { return native; }
 uintptr_t guest_cpu_stack_pointer(void) { return (uintptr_t)__builtin_frame_address(0); }
 int guest_cpu_hook(uintptr_t address, size_t size, GuestHook hook) { (void)address; (void)size; (void)hook; return 0; }
+int guest_cpu_replace_function(uintptr_t address, void *host_fn, GuestReplaceKind kind,
+                               const unsigned char *expected_bytes, size_t expected_len,
+                               const char *name) {
+    (void)address; (void)host_fn; (void)kind; (void)expected_bytes; (void)expected_len; (void)name;
+    return 0;
+}
 uint64_t guest_cpu_tsc(void) { return __rdtsc(); }
 #ifndef _WIN32
 void guest_cpu_set_gs(void *base) {

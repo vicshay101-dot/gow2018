@@ -110,4 +110,5 @@ void runtime_savedata_report(void);
 int runtime_savedata_param(int32_t user, const char *dir, void *param);
 int runtime_savedata_icon(int32_t user, const char *dir, char *out, size_t size);
 void runtime_thread_attach_host(const char *name);
+unsigned runtime_native_cpu_install(uintptr_t image_base, uint64_t exec_size);
 #endif

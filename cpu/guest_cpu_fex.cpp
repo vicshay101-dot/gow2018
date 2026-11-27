@@ -130,6 +130,7 @@ FastKind ClassifyFastKind(const char* name) {
         "sceGnmAreSubmitsAllowed",
         "sceGnmSubmitDone",
         "sceGnmDrawOpaqueAuto",
+        "scePthreadYield",
     };
     for (const char* s : kInt0) {
         if (std::strcmp(name, s) == 0) return FastKind::Int0;
@@ -151,6 +152,7 @@ FastKind ClassifyFastKind(const char* name) {
         "sceKernelWaitSema",
         "sceKernelSignalSema",
         "sceKernelPollSema",
+        "sceKernelCancelSema",
         "sceKernelWaitEventFlag",
         "sceKernelSetEventFlag",
         "sceKernelClearEventFlag",
@@ -172,6 +174,14 @@ FastKind ClassifyFastKind(const char* name) {
         "__cxa_guard_acquire",
         "__cxa_guard_release",
         "__tls_get_addr",
+        "pthread_getspecific",
+        "pthread_setspecific",
+        "scePthreadEqual",
+        "sceFiberGetSelf",
+        "scePthreadAttrGetdetachstate",
+        "scePthreadAttrGetstack",
+        "scePthreadAttrSetguardsize",
+        "scePthreadAttrGetschedparam",
         "strcmp",
         "strncmp",
         "strcasecmp",
@@ -200,6 +210,11 @@ FastKind ClassifyFastKind(const char* name) {
         "sceGnmDrawIndex",
         "sceGnmDrawIndexAuto",
         "sceGnmDrawIndexOffset",
+        "sceGnmDrawIndexIndirect",
+        "sceGnmDrawIndexIndirectCountMulti",
+        "sceGnmDrawIndexMultiInstanced",
+        "sceGnmDrawIndirect",
+        "sceGnmDrawIndirectCountMulti",
         "sceGnmDispatchDirect",
         "sceGnmDispatchIndirect",
         "sceGnmDispatchIndirectOnMec",
@@ -209,6 +224,15 @@ FastKind ClassifyFastKind(const char* name) {
         "sceGnmInsertPopMarker",
         "sceGnmDingDong",
         "sceGnmComputeWaitOnAddress",
+        "sceGnmSubmitCommandBuffers",
+        "sceGnmSubmitAndFlipCommandBuffers",
+        "sceGnmSubmitCommandBuffersForWorkload",
+        "sceGnmSubmitAndFlipCommandBuffersForWorkload",
+        "sceGnmInsertDingDongMarker",
+        "sceGnmDingDongForWorkload",
+        "sceGnmBeginWorkload",
+        "sceGnmEndWorkload",
+        "sceGnmRequestFlipAndSubmitDoneForWorkload",
     };
     for (const char* s : kInt6) {
         if (std::strcmp(name, s) == 0) return FastKind::Int6;
@@ -234,6 +258,18 @@ struct Hook {
 };
 std::array<Hook, 64> hooks;
 std::atomic<size_t> hook_count;
+
+struct ReplacedFn {
+    uintptr_t syscall_rip;
+    void* fn;
+    const char* name;
+    GuestReplaceKind kind;
+};
+constexpr size_t kMaxReplacements = 128;
+std::array<ReplacedFn, kMaxReplacements> replacements;
+std::atomic<uint64_t> replace_calls[kMaxReplacements];
+std::atomic<size_t> replace_count{0};
+std::mutex replace_lock;
 
 std::shared_mutex code_lock;
 std::vector<std::pair<uintptr_t, size_t>> code_ranges;
@@ -405,6 +441,51 @@ inline void CallHostFast(CPUState& s, void* fn, FastKind kind) {
     }
 }
 
+inline void WriteScalarF32(CPUState& s, unsigned reg, float value) {
+    uint64_t* dst = Xmm(s, reg);
+    std::memset(dst, 0, wide_xmm ? 32 : 16);
+    std::memcpy(dst, &value, sizeof(value));
+}
+
+inline float ReadScalarF32(CPUState& s, unsigned reg) {
+    float value;
+    std::memcpy(&value, Xmm(s, reg), sizeof(value));
+    return value;
+}
+
+inline void CallReplaced(CPUState& s, void* fn, GuestReplaceKind kind) {
+    using namespace FEXCore::X86State;
+    switch (kind) {
+    case GUEST_REPLACE_INT6: {
+        using Fn6 = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+        s.gregs[REG_RAX] = reinterpret_cast<Fn6>(fn)(
+            s.gregs[REG_RDI], s.gregs[REG_RSI], s.gregs[REG_RDX],
+            s.gregs[REG_R10], s.gregs[REG_R8], s.gregs[REG_R9]);
+        return;
+    }
+    case GUEST_REPLACE_F32_TO_F32: {
+        using FnF32 = float (*)(float);
+        WriteScalarF32(s, 0, reinterpret_cast<FnF32>(fn)(ReadScalarF32(s, 0)));
+        return;
+    }
+    case GUEST_REPLACE_F32_I32_TO_F32: {
+        using FnF32I32 = float (*)(float, int32_t);
+        WriteScalarF32(s, 0, reinterpret_cast<FnF32I32>(fn)(
+            ReadScalarF32(s, 0), static_cast<int32_t>(s.gregs[REG_RDI])));
+        return;
+    }
+    case GUEST_REPLACE_F32_F32_TO_F32: {
+        using FnF32F32 = float (*)(float, float);
+        WriteScalarF32(s, 0, reinterpret_cast<FnF32F32>(fn)(
+            ReadScalarF32(s, 0), ReadScalarF32(s, 1)));
+        return;
+    }
+    case GUEST_REPLACE_FULL:
+        CallHost(s, fn);
+        return;
+    }
+}
+
 class Handler final : public FEXCore::HLE::SyscallHandler {
 public:
     void HandleSyscall(FEXCore::Core::CpuStateFrame* frame) override {
@@ -434,6 +515,15 @@ public:
             } else {
                 CallHost(s, fn);
             }
+            s.rip = rip + 2;
+            return;
+        }
+        for (size_t i = 0, n = replace_count.load(std::memory_order_acquire); i < n; ++i) {
+            if (replacements[i].syscall_rip != rip) {
+                continue;
+            }
+            replace_calls[i].fetch_add(1, std::memory_order_relaxed);
+            CallReplaced(s, replacements[i].fn, replacements[i].kind);
             s.rip = rip + 2;
             return;
         }
@@ -781,6 +871,42 @@ int guest_cpu_hook(uintptr_t address, size_t size, GuestHook hook) {
     return 1;
 }
 
+int guest_cpu_replace_function(uintptr_t address, void* host_fn, GuestReplaceKind kind,
+                               const unsigned char* expected_bytes, size_t expected_len,
+                               const char* name) {
+    static constexpr unsigned char kTrampoline[6] = {0x49, 0x89, 0xca, 0x0f, 0x05, 0xc3};
+    if (!address || !host_fn || (expected_bytes && expected_len < sizeof(kTrampoline))) {
+        return 0;
+    }
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        return 0;
+    }
+    {
+        std::lock_guard lock(replace_lock);
+        const size_t index = replace_count.load(std::memory_order_relaxed);
+        if (index >= kMaxReplacements) {
+            return 0;
+        }
+        if (expected_bytes && std::memcmp(reinterpret_cast<const void*>(address), expected_bytes, expected_len) != 0) {
+            return 0;
+        }
+        const uintptr_t page_addr = address & ~uintptr_t(page_size - 1);
+        auto* page = reinterpret_cast<void*>(page_addr);
+        const size_t span = address + sizeof(kTrampoline) - page_addr;
+        if (mprotect(page, span, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+            return 0;
+        }
+        replacements[index] = {address + SyscallOffset, host_fn, name, kind};
+        replace_calls[index].store(0, std::memory_order_relaxed);
+        replace_count.store(index + 1, std::memory_order_release);
+        std::memcpy(reinterpret_cast<void*>(address), kTrampoline, sizeof(kTrampoline));
+        mprotect(page, span, PROT_READ | PROT_EXEC);
+    }
+    InvalidateCode(address, sizeof(kTrampoline));
+    return 1;
+}
+
 uint64_t guest_cpu_tsc(void) {
     uint64_t value;
     asm volatile("mrs %0, cntvct_el0" : "=r"(value));
@@ -820,20 +946,29 @@ size_t guest_cpu_thread_states(char* out, size_t size) {
 }
 size_t guest_cpu_stub_top(const char** names, uint64_t* deltas, size_t max) {
     static uint64_t last[StubBytes / StubSize];
+    static uint64_t last_rep[kMaxReplacements];
     const size_t n = stub_count.load(std::memory_order_acquire);
-    std::vector<std::pair<uint64_t, size_t>> changed;
+    std::vector<std::pair<uint64_t, const char*>> changed;
     for (size_t i = 1; i < n; ++i) {
         const uint64_t now = stub_calls[i].load(std::memory_order_relaxed);
         if (now != last[i]) {
-            changed.emplace_back(now - last[i], i);
+            changed.emplace_back(now - last[i], stub_names[i] ? stub_names[i] : "?");
             last[i] = now;
+        }
+    }
+    const size_t rn = replace_count.load(std::memory_order_acquire);
+    for (size_t i = 0; i < rn; ++i) {
+        const uint64_t now = replace_calls[i].load(std::memory_order_relaxed);
+        if (now != last_rep[i]) {
+            changed.emplace_back(now - last_rep[i], replacements[i].name ? replacements[i].name : "native:?");
+            last_rep[i] = now;
         }
     }
     std::sort(changed.begin(), changed.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
     const size_t count = std::min(changed.size(), max);
     for (size_t k = 0; k < count; ++k) {
         deltas[k] = changed[k].first;
-        names[k] = stub_names[changed[k].second] ? stub_names[changed[k].second] : "?";
+        names[k] = changed[k].second;
     }
     return count;
 }

@@ -1197,10 +1197,13 @@ int main(int argc, char **argv) {
     }
     protect(image, round_page(size), 0);
     int executable_entry = 0;
+    uint64_t exec_size = 0;
     for (uint64_t i = 0; i < ns; ++i) {
         protect(image + segments[i].address, round_page(segments[i].size), (unsigned)segments[i].flags);
-        if ((segments[i].flags & 1) && entry >= segments[i].address && entry - segments[i].address < segments[i].size)
+        if ((segments[i].flags & 1) && entry >= segments[i].address && entry - segments[i].address < segments[i].size) {
             executable_entry = 1;
+            exec_size = segments[i].address + segments[i].size;
+        }
     }
     if (!executable_entry) fail("entry is not executable");
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
@@ -1263,6 +1266,7 @@ int main(int argc, char **argv) {
             if (result) fail("module initializer failed");
         }
     }
+    runtime_native_cpu_install((uintptr_t)image, exec_size);
     runtime_profile_start((uintptr_t)image, (uint64_t)size);
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
     entered_game=1;

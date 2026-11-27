@@ -145,7 +145,9 @@ static int watch_a_find_protection(uintptr_t address,int *prot) {
 }
 static void arm_wait_flag_watch(uintptr_t caller) {
     /* Auto-arm disabled: only enable mprotect watch on 0x80209c000 if GOW3_WATCH_A=1 is explicitly set. */
-    if (!getenv("GOW3_WATCH_A")) return;
+    static int watch_a_env = -1;
+    if (watch_a_env < 0) watch_a_env = (getenv("GOW3_WATCH_A") != NULL);
+    if (!watch_a_env) return;
     if (caller!=SPIN_A_CALLER || watch_a_armed) return;
     if (!watch_a_ready) {
         long ps=sysconf(_SC_PAGESIZE);
@@ -189,7 +191,7 @@ static void watch_t_init(void) {
 }
 static void watch_t_poll(uintptr_t caller) {
     static unsigned polls;
-    watch_t_init();
+    if (watch_t_on < 0) watch_t_init();
     if (!watch_t_on || (++polls % 64) != 0) return;
     if (!spin_global_readable(watch_t_addr, sizeof(uint64_t))) return;
     uint64_t v=*(volatile uint64_t *)(uintptr_t)watch_t_addr;
@@ -223,7 +225,9 @@ static void arm_wait_flag_watch(uintptr_t caller) { (void)caller; }
 #endif
 static void maybe_force_wait_flag(uintptr_t caller) {
     static int forced;
-    if (forced || !getenv("GOW3_FORCE_A")) return; /* opt-in: forcing A did not release the wait */
+    static int force_a_env = -1;
+    if (force_a_env < 0) force_a_env = (getenv("GOW3_FORCE_A") != NULL);
+    if (forced || !force_a_env) return; /* opt-in: forcing A did not release the wait */
     if (caller!=SPIN_A_CALLER || spin_calls<20000) return;
     if (!spin_global_readable(SPIN_A_ADDR,sizeof(int32_t))) return;
     volatile int32_t *flag_a=(volatile int32_t *)(uintptr_t)SPIN_A_ADDR;
@@ -355,9 +359,29 @@ static int spin_short_sleep_throttle(void) {
     if (v<0) { FILE *f=fopen("/sdcard/Download/gow2018_spin_throttle","r"); v=f!=NULL; if (f) fclose(f); }
     return v;
 }
-static ABI int32_t kernel_usleep(uint32_t usec) {
-    uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
+static int fast_short_usleep_enabled(void) {
+    static int v=-1;
+    if (v<0) { const char *e=getenv("GOW3_FAST_SHORT_USLEEP"); v=!(e && e[0]=='0'); }
+    return v;
+}
+static __thread unsigned short_sleep_streak;
+static __thread uintptr_t short_sleep_last_caller;
+static int32_t guest_usleep_common(uint32_t usec, uintptr_t caller) {
     note_usleep_spin(caller); arm_wait_flag_watch(caller);
+    if (usec>0 && usec<=20 && !spin_short_sleep_throttle() && fast_short_usleep_enabled()) {
+        if (caller==short_sleep_last_caller) {
+            ++short_sleep_streak;
+        } else {
+            short_sleep_last_caller=caller;
+            short_sleep_streak=1;
+        }
+        if (short_sleep_streak<=16) {
+            sched_yield();
+            return 0;
+        }
+    } else {
+        short_sleep_streak=0;
+    }
     uint64_t ns=(uint64_t)usec*1000;
     /* The main thread polls A every 100 us while it waits for the frame's jobs. It used to be
      * stretched to 1 ms here (black-screen era); that delayed every frame, so the game's own
@@ -372,22 +396,13 @@ static ABI int32_t kernel_usleep(uint32_t usec) {
     }
     sleep_ns(ns); return 0;
 }
+static ABI int32_t kernel_usleep(uint32_t usec) {
+    uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
+    return guest_usleep_common(usec, caller);
+}
 static ABI int32_t posix_usleep(uint32_t usec) {
     uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0));
-    note_usleep_spin(caller); arm_wait_flag_watch(caller);
-    uint64_t ns=(uint64_t)usec*1000;
-    /* The main thread polls A every 100 us while it waits for the frame's jobs. It used to be
-     * stretched to 1 ms here (black-screen era); that delayed every frame, so the game's own
-     * interval is kept unless GOW3_SPIN_THROTTLE=1. */
-    if (caller==SPIN_A_CALLER && spin_calls>500 && spin_throttle_enabled()) {
-        sched_yield();
-        if (ns<1000000ULL) ns=1000000ULL;
-    }
-    if (spin_short_sleep_throttle() && ns<200000ULL) {
-        sched_yield();
-        ns=200000ULL;
-    }
-    sleep_ns(ns); return 0;
+    return guest_usleep_common(usec, caller);
 }
 static ABI uint32_t posix_sleep(uint32_t seconds) { sleep_ns((uint64_t)seconds*1000000000); return 0; }
 static ABI int32_t posix_nanosleep(const GuestTimespec *rq,GuestTimespec *rem) {
