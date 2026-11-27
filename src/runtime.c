@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <strings.h>
+#endif
 #include <stdatomic.h>
 #include <sched.h>
 #include <pthread.h>
@@ -227,22 +230,58 @@ static ABI __attribute__((noreturn)) void stack_fail(void) {
     exit(22);
 }
 static ABI void *guest_memset(void *dst, int value, size_t size) {
-    note_guest_copy(size, size>=65536 ? guest_cpu_return_address((uintptr_t)__builtin_return_address(0)) : 0);
-    if (size>=65536) atomic_fetch_add_explicit(&memset_dst_blocks[((uintptr_t)dst>>16)&4095],1,memory_order_relaxed);
-    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memset(dst, value, size);
+    if (size>=65536) {
+        note_guest_copy(size, guest_cpu_return_address((uintptr_t)__builtin_return_address(0)));
+        atomic_fetch_add_explicit(&memset_dst_blocks[((uintptr_t)dst>>16)&4095],1,memory_order_relaxed);
+        atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed);
+    }
+    return memset(dst, value, size);
 }
 static ABI void *guest_memcpy(void *dst, const void *src, size_t size) {
-    note_guest_copy(size, size>=65536 ? guest_cpu_return_address((uintptr_t)__builtin_return_address(0)) : 0);
-    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memcpy(dst, src, size);
+    if (size>=65536) {
+        note_guest_copy(size, guest_cpu_return_address((uintptr_t)__builtin_return_address(0)));
+        atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed);
+    }
+    return memcpy(dst, src, size);
 }
 static ABI void *guest_memmove(void *dst, const void *src, size_t size) {
-    note_guest_copy(size, size>=65536 ? guest_cpu_return_address((uintptr_t)__builtin_return_address(0)) : 0);
-    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memmove(dst, src, size);
+    if (size>=65536) {
+        note_guest_copy(size, guest_cpu_return_address((uintptr_t)__builtin_return_address(0)));
+        atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed);
+    }
+    return memmove(dst, src, size);
 }
 static ABI int guest_memcmp(const void *a, const void *b, size_t size) {
-    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memcmp(a, b, size);
+    return memcmp(a, b, size);
 }
 static ABI size_t guest_strlen(const char *text) { return strlen(text); }
+static ABI int guest_strcmp(const char *a, const char *b) { return strcmp(a, b); }
+static ABI int guest_strncmp(const char *a, const char *b, size_t n) { return strncmp(a, b, n); }
+static ABI int guest_strcasecmp(const char *a, const char *b) {
+#ifdef _WIN32
+    return _stricmp(a, b);
+#else
+    return strcasecmp(a, b);
+#endif
+}
+static ABI int guest_strncasecmp(const char *a, const char *b, size_t n) {
+#ifdef _WIN32
+    return _strnicmp(a, b, n);
+#else
+    return strncasecmp(a, b, n);
+#endif
+}
+static ABI char *guest_strchr(const char *s, int c) { return strchr(s, c); }
+static ABI char *guest_strrchr(const char *s, int c) { return strrchr(s, c); }
+static ABI char *guest_strcpy(char *dst, const char *src) { return strcpy(dst, src); }
+static ABI char *guest_strncpy(char *dst, const char *src, size_t n) { return strncpy(dst, src, n); }
+static ABI char *guest_strcat(char *dst, const char *src) { return strcat(dst, src); }
+static ABI char *guest_strncat(char *dst, const char *src, size_t n) { return strncat(dst, src, n); }
+static ABI char *guest_strstr(const char *hay, const char *needle) { return strstr(hay, needle); }
+static ABI void *guest_memchr(const void *s, int c, size_t n) { return memchr(s, c, n); }
+static ABI size_t guest_strspn(const char *s, const char *accept) { return strspn(s, accept); }
+static ABI size_t guest_strcspn(const char *s, const char *reject) { return strcspn(s, reject); }
+static ABI char *guest_strpbrk(const char *s, const char *accept) { return strpbrk(s, accept); }
 static ABI __attribute__((noreturn)) void guest_libc_exit(int status) {
     printf("Runtime: guest requested exit(%d)\n", status);
     runtime_finalize(NULL);
@@ -285,6 +324,21 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (!strcmp(name, "+P6FRGH4LfA#libc")) return (uintptr_t)guest_memmove;
     if (!strcmp(name, "DfivPArhucg#libc")) return (uintptr_t)guest_memcmp;
     if (!strcmp(name, "j4ViWNHEgww#libc")) return (uintptr_t)guest_strlen;
+    if (!strcmp(name, "Ovb2dSJOAuE#libc")) return (uintptr_t)guest_strcmp;
+    if (!strcmp(name, "aesyjrHVWy4#libc")) return (uintptr_t)guest_strncmp;
+    if (!strcmp(name, "AV6ipCNa4Rw#libc")) return (uintptr_t)guest_strcasecmp;
+    if (!strcmp(name, "pXvbDfchu6k#libc")) return (uintptr_t)guest_strncasecmp;
+    if (!strcmp(name, "ob5xAW4ln-0#libc")) return (uintptr_t)guest_strchr;
+    if (!strcmp(name, "9yDWMxEFdJU#libc")) return (uintptr_t)guest_strrchr;
+    if (!strcmp(name, "kiZSXIWd9vg#libc")) return (uintptr_t)guest_strcpy;
+    if (!strcmp(name, "6sJWiWSRuqk#libc")) return (uintptr_t)guest_strncpy;
+    if (!strcmp(name, "Ls4tzzhimqQ#libc")) return (uintptr_t)guest_strcat;
+    if (!strcmp(name, "kHg45qPC6f0#libc")) return (uintptr_t)guest_strncat;
+    if (!strcmp(name, "viiwFMaNamA#libc")) return (uintptr_t)guest_strstr;
+    if (!strcmp(name, "8u8lPzUEq+U#libc")) return (uintptr_t)guest_memchr;
+    if (!strcmp(name, "-kU6bB4M-+k#libc")) return (uintptr_t)guest_strspn;
+    if (!strcmp(name, "q0F6yS-rCms#libc")) return (uintptr_t)guest_strcspn;
+    if (!strcmp(name, "kDZvoVssCgQ#libc")) return (uintptr_t)guest_strpbrk;
     if (!strcmp(name, "vNe1w4diLCs#libkernel")) return (uintptr_t)guest_tls_get_addr;
     if (!strcmp(name, "959qrazPIrg#libkernel")) return (uintptr_t)guest_procparam;
     if (!strcmp(name, "p5EcQeEeJAE#libkernel")) return (uintptr_t)guest_set_heap_api;

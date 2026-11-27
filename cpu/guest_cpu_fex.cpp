@@ -80,12 +80,141 @@ FEXCore::ArchHelpers::Arm64::UnalignedHandlerType unaligned_type;
 constexpr size_t StubSize = 16;
 constexpr size_t StubBytes = 1 << 20;
 constexpr size_t SyscallOffset = 3;
+enum class FastKind : uint8_t {
+    Full = 0,
+    Int0,
+    Int6,
+    Memcpy,
+    Memset,
+    Memmove,
+    Memcmp,
+    Strlen,
+};
 unsigned char* stubs;
 uintptr_t callback_ret;
 void* stub_functions[StubBytes / StubSize];
 std::atomic<size_t> stub_count;
 std::atomic<uint64_t> stub_calls[StubBytes / StubSize];
 const char* stub_names[StubBytes / StubSize];
+FastKind stub_fast_kind[StubBytes / StubSize];
+
+bool FastHostEnabled() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("GOW3_FEX_FAST_HOST");
+        return !env || env[0] != '0';
+    }();
+    return enabled;
+}
+
+FastKind ClassifyFastKind(const char* name) {
+    if (!name || !FastHostEnabled()) {
+        return FastKind::Full;
+    }
+    if (std::strcmp(name, "memcpy") == 0) return FastKind::Memcpy;
+    if (std::strcmp(name, "memset") == 0) return FastKind::Memset;
+    if (std::strcmp(name, "memmove") == 0) return FastKind::Memmove;
+    if (std::strcmp(name, "memcmp") == 0) return FastKind::Memcmp;
+    if (std::strcmp(name, "strlen") == 0) return FastKind::Strlen;
+
+    static constexpr const char* kInt0[] = {
+        "scePthreadSelf",
+        "pthread_self",
+        "sceKernelGetProcessTimeCounter",
+        "sceKernelGetProcessTimeCounterFrequency",
+        "sceKernelGetProcessTime",
+        "sceKernelReadTsc",
+        "sceKernelGetTscFrequency",
+        "__error",
+        "sceKernelGetCurrentCpu",
+        "sceKernelIsNeoMode",
+        "sceGnmAreSubmitsAllowed",
+        "sceGnmSubmitDone",
+        "sceGnmDrawOpaqueAuto",
+    };
+    for (const char* s : kInt0) {
+        if (std::strcmp(name, s) == 0) return FastKind::Int0;
+    }
+
+    static constexpr const char* kInt6[] = {
+        "scePthreadMutexLock",
+        "scePthreadMutexUnlock",
+        "scePthreadMutexTrylock",
+        "scePthreadMutexTimedlock",
+        "pthread_mutex_lock",
+        "pthread_mutex_unlock",
+        "pthread_mutex_trylock",
+        "scePthreadRwlockRdlock",
+        "scePthreadRwlockWrlock",
+        "scePthreadRwlockTryrdlock",
+        "scePthreadRwlockTrywrlock",
+        "scePthreadRwlockUnlock",
+        "sceKernelWaitSema",
+        "sceKernelSignalSema",
+        "sceKernelPollSema",
+        "sceKernelWaitEventFlag",
+        "sceKernelSetEventFlag",
+        "sceKernelClearEventFlag",
+        "sceKernelPollEventFlag",
+        "scePthreadCondSignal",
+        "scePthreadCondBroadcast",
+        "scePthreadCondWait",
+        "scePthreadCondTimedwait",
+        "pthread_cond_signal",
+        "pthread_cond_broadcast",
+        "pthread_cond_wait",
+        "pthread_cond_timedwait",
+        "usleep",
+        "sceKernelUsleep",
+        "sceKernelNanosleep",
+        "nanosleep",
+        "gettimeofday",
+        "clock_gettime",
+        "__cxa_guard_acquire",
+        "__cxa_guard_release",
+        "__tls_get_addr",
+        "strcmp",
+        "strncmp",
+        "strcasecmp",
+        "strncasecmp",
+        "strchr",
+        "strrchr",
+        "strcpy",
+        "strncpy",
+        "strcat",
+        "strncat",
+        "strstr",
+        "memchr",
+        "strspn",
+        "strcspn",
+        "strpbrk",
+        "sceGnmUpdateVsShader",
+        "sceGnmUpdatePsShader350",
+        "sceGnmUpdatePsShader",
+        "sceGnmSetPsShader350",
+        "sceGnmSetPsShader",
+        "sceGnmSetVsShader",
+        "sceGnmSetCsShader",
+        "sceGnmSetCsShaderWithModifier",
+        "sceGnmSetVgtControl",
+        "sceGnmResetVgtControl",
+        "sceGnmDrawIndex",
+        "sceGnmDrawIndexAuto",
+        "sceGnmDrawIndexOffset",
+        "sceGnmDispatchDirect",
+        "sceGnmDispatchIndirect",
+        "sceGnmDispatchIndirectOnMec",
+        "sceGnmSetEmbeddedVsShader",
+        "sceGnmSetEmbeddedPsShader",
+        "sceGnmInsertPushMarker",
+        "sceGnmInsertPopMarker",
+        "sceGnmDingDong",
+        "sceGnmComputeWaitOnAddress",
+    };
+    for (const char* s : kInt6) {
+        if (std::strcmp(name, s) == 0) return FastKind::Int6;
+    }
+    return FastKind::Full;
+}
 /* Per-thread "last host call" (diagnostics): which API each guest thread entered most recently. */
 struct ThreadLast {
     std::atomic<size_t> stub{0};
@@ -204,6 +333,78 @@ void CallHost(CPUState& s, void* fn) {
     std::memcpy(Xmm(s, 1), &result.v[1], sizeof(result.v[1]));
 }
 
+// Fast-path for pure integer/pointer host functions: skips copying XMM[0..7] and gow3cpu_host_call.
+inline void CallHostFast(CPUState& s, void* fn, FastKind kind) {
+    using namespace FEXCore::X86State;
+    using Fn0 = uint64_t (*)();
+    using Fn3 = uint64_t (*)(uint64_t, uint64_t, uint64_t);
+    using Fn6 = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+
+    switch (kind) {
+    case FastKind::Memcpy: {
+        const size_t size = s.gregs[REG_RDX];
+        if (size < 65536) {
+            if (size != 0) {
+                std::memcpy(reinterpret_cast<void*>(s.gregs[REG_RDI]),
+                            reinterpret_cast<const void*>(s.gregs[REG_RSI]), size);
+            }
+            s.gregs[REG_RAX] = s.gregs[REG_RDI];
+            return;
+        }
+        s.gregs[REG_RAX] = reinterpret_cast<Fn3>(fn)(s.gregs[REG_RDI], s.gregs[REG_RSI], size);
+        return;
+    }
+    case FastKind::Memset: {
+        const size_t size = s.gregs[REG_RDX];
+        if (size < 65536) {
+            if (size != 0) {
+                std::memset(reinterpret_cast<void*>(s.gregs[REG_RDI]),
+                            static_cast<int>(s.gregs[REG_RSI]), size);
+            }
+            s.gregs[REG_RAX] = s.gregs[REG_RDI];
+            return;
+        }
+        s.gregs[REG_RAX] = reinterpret_cast<Fn3>(fn)(s.gregs[REG_RDI], s.gregs[REG_RSI], size);
+        return;
+    }
+    case FastKind::Memmove: {
+        const size_t size = s.gregs[REG_RDX];
+        if (size < 65536) {
+            if (size != 0) {
+                std::memmove(reinterpret_cast<void*>(s.gregs[REG_RDI]),
+                             reinterpret_cast<const void*>(s.gregs[REG_RSI]), size);
+            }
+            s.gregs[REG_RAX] = s.gregs[REG_RDI];
+            return;
+        }
+        s.gregs[REG_RAX] = reinterpret_cast<Fn3>(fn)(s.gregs[REG_RDI], s.gregs[REG_RSI], size);
+        return;
+    }
+    case FastKind::Memcmp: {
+        const size_t size = s.gregs[REG_RDX];
+        const int r = size ? std::memcmp(reinterpret_cast<const void*>(s.gregs[REG_RDI]),
+                                         reinterpret_cast<const void*>(s.gregs[REG_RSI]), size)
+                           : 0;
+        s.gregs[REG_RAX] = static_cast<uint32_t>(r);
+        return;
+    }
+    case FastKind::Strlen:
+        s.gregs[REG_RAX] = std::strlen(reinterpret_cast<const char*>(s.gregs[REG_RDI]));
+        return;
+    case FastKind::Int0:
+        s.gregs[REG_RAX] = reinterpret_cast<Fn0>(fn)();
+        return;
+    case FastKind::Int6:
+        s.gregs[REG_RAX] = reinterpret_cast<Fn6>(fn)(s.gregs[REG_RDI], s.gregs[REG_RSI],
+                                                      s.gregs[REG_RDX], s.gregs[REG_R10],
+                                                      s.gregs[REG_R8], s.gregs[REG_R9]);
+        return;
+    case FastKind::Full:
+        CallHost(s, fn);
+        return;
+    }
+}
+
 class Handler final : public FEXCore::HLE::SyscallHandler {
 public:
     void HandleSyscall(FEXCore::Core::CpuStateFrame* frame) override {
@@ -211,20 +412,28 @@ public:
         const uint64_t rip = s.rip;
         const uint64_t offset = rip - reinterpret_cast<uintptr_t>(stubs);
         if (offset < StubBytes && offset % StubSize == SyscallOffset) {
-            void* fn = stub_functions[offset / StubSize];
+            const size_t stub_idx = offset / StubSize;
+            void* fn = stub_functions[stub_idx];
             if (!fn) {
                 Fatal("call of an unregistered host stub", rip);
             }
-            stub_calls[offset / StubSize].fetch_add(1, std::memory_order_relaxed);
+            stub_calls[stub_idx].fetch_add(1, std::memory_order_relaxed);
             if (!this_thread_last) {
                 this_thread_last = new ThreadLast();
                 this_thread_last->tid = static_cast<unsigned long long>(pthread_self());
                 const size_t slot = thread_registry_count.fetch_add(1, std::memory_order_relaxed);
                 if (slot < kThreadSlots) thread_registry[slot] = this_thread_last;
             }
-            this_thread_last->stub.store(offset / StubSize, std::memory_order_relaxed);
-            this_thread_last->calls.fetch_add(1, std::memory_order_relaxed);
-            CallHost(s, fn);
+            this_thread_last->stub.store(stub_idx, std::memory_order_relaxed);
+            this_thread_last->calls.store(
+                this_thread_last->calls.load(std::memory_order_relaxed) + 1,
+                std::memory_order_relaxed);
+            const FastKind kind = stub_fast_kind[stub_idx];
+            if (kind != FastKind::Full) {
+                CallHostFast(s, fn, kind);
+            } else {
+                CallHost(s, fn);
+            }
             s.rip = rip + 2;
             return;
         }
@@ -590,6 +799,7 @@ void guest_cpu_name_stub(uintptr_t stub, const char* name) {
     const size_t index = (stub - reinterpret_cast<uintptr_t>(stubs)) / StubSize;
     if (stubs && index < StubBytes / StubSize) {
         stub_names[index] = name;
+        stub_fast_kind[index] = ClassifyFastKind(name);
     }
 }
 size_t guest_cpu_thread_states(char* out, size_t size) {
