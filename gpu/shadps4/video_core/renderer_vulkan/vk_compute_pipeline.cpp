@@ -31,7 +31,9 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         .pName = "main",
     };
 
-    const bool bindless_images = instance.IsBindlessImagesSupported();
+    const bool bindless_images =
+        instance.IsBindlessImagesSupported() && !info->bindless_image_recipes.empty();
+    const bool bindless_storage = bindless_images && info->HasBindlessStorageRecipe();
     u32 binding{};
     boost::container::small_vector<vk::DescriptorSetLayoutBinding, 32> bindings;
     boost::container::small_vector<vk::DescriptorBindingFlags, 32> binding_flags;
@@ -74,14 +76,14 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         bindings.push_back({
             .binding = binding,
             .descriptorType = vk::DescriptorType::eSampledImage,
-            .descriptorCount = 64,
+            .descriptorCount = Shader::Info::BindlessArraySize,
             .stageFlags = vk::ShaderStageFlagBits::eCompute,
         });
         binding_flags.push_back(vk::DescriptorBindingFlagBits::ePartiallyBound);
         binding += 1;
     }
 
-    if (bindless_images) {
+    if (bindless_storage) {
         bindings.push_back({
             .binding = binding,
             .descriptorType = vk::DescriptorType::eStorageImage,

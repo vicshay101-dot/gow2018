@@ -718,13 +718,13 @@ def main():
                             print(f'Patches: CUSA07408 native render {res} ({len(writes)} writes)')
                         except (ValueError, LookupError) as error:
                             print(f'Patches: CUSA07408 resolution skipped ({error})', file=sys.stderr)
-                for env_var, label, compiler in (
-                    ('GOW3_GOW2018_DISABLE_MOTION_BLUR', 'motion blur', compile_gow2018_motion_blur_patches),
-                    ('GOW3_GOW2018_DISABLE_SSR', 'SSR', compile_gow2018_ssr_patches),
-                    ('GOW3_GOW2018_DISABLE_SSAO', 'SSAO+SSR', compile_gow2018_ssao_patches),
-                    ('GOW3_GOW2018_DISABLE_BLOOM', 'bloom', compile_gow2018_bloom_patches),
+                for env_var, default_disable, label, compiler in (
+                    ('GOW3_GOW2018_DISABLE_MOTION_BLUR', '1', 'motion blur', compile_gow2018_motion_blur_patches),
+                    ('GOW3_GOW2018_DISABLE_SSR', '1', 'SSR', compile_gow2018_ssr_patches),
+                    ('GOW3_GOW2018_DISABLE_SSAO', '0', 'SSAO+SSR', compile_gow2018_ssao_patches),
+                    ('GOW3_GOW2018_DISABLE_BLOOM', '0', 'bloom', compile_gow2018_bloom_patches),
                 ):
-                    if os.environ.get(env_var, '1') != '0':
+                    if os.environ.get(env_var, default_disable) != '0':
                         try:
                             effect_writes = compiler(img, segs)
                             writes.extend(effect_writes)

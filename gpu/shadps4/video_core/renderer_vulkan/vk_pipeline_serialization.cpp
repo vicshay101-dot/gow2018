@@ -32,9 +32,9 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 28u; // gow3: opt-in Float-only GOW3_MRT_SANITIZE
-static constexpr u32 ShaderMetaVersion = 28u; // gow3: opt-in Float-only GOW3_MRT_SANITIZE
-static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
+static constexpr u32 ShaderBinaryVersion = 29u; // gow3: dynamic ReadConstBuffer + multi-recipe bindless + push desc
+static constexpr u32 ShaderMetaVersion = 29u; // gow3: dynamic ReadConstBuffer + multi-recipe bindless + push desc
+static constexpr u32 PipelineKeyVersion = 6u; // gow3: per-stage bindless array layout + conditional storage
 } // namespace Serialization
 
 namespace Vulkan {
