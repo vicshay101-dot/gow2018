@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 #include <sched.h>
 #include <pthread.h>
+#include <math.h>
 
 typedef struct {
     union { GuestCallback plain; void (ABI *with_arg)(void *); } callback;
@@ -243,6 +244,46 @@ static ABI int guest_memcmp(const void *a, const void *b, size_t size) {
     atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memcmp(a, b, size);
 }
 static ABI size_t guest_strlen(const char *text) { return strlen(text); }
+/* Host libm for the libc math imports (GOW3_LIBM_HOST=1, off by default). Without it these run as
+ * guest code from the linked libc under the JIT. Only standard C signatures: Dinkumware helpers
+ * with extra arguments (_Sin, _FSin) stay in guest code. */
+static ABI double guest_pow(double x, double y) { return pow(x, y); }
+static ABI float guest_powf(float x, float y) { return powf(x, y); }
+static ABI double guest_exp(double x) { return exp(x); }
+static ABI float guest_expf(float x) { return expf(x); }
+static ABI double guest_atan2(double y, double x) { return atan2(y, x); }
+static ABI float guest_atan2f(float y, float x) { return atan2f(y, x); }
+static ABI double guest_fmod(double x, double y) { return fmod(x, y); }
+static ABI float guest_fmodf(float x, float y) { return fmodf(x, y); }
+static ABI double guest_tan(double x) { return tan(x); }
+static ABI float guest_tanf(float x) { return tanf(x); }
+static ABI double guest_atan(double x) { return atan(x); }
+static ABI float guest_atanf(float x) { return atanf(x); }
+static ABI double guest_acos(double x) { return acos(x); }
+static ABI float guest_acosf(float x) { return acosf(x); }
+static ABI double guest_asin(double x) { return asin(x); }
+static ABI float guest_asinf(float x) { return asinf(x); }
+static int libm_host_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) { const char *e = getenv("GOW3_LIBM_HOST"); enabled = e && e[0]=='1'; }
+    return enabled;
+}
+static uintptr_t libm_resolve(const char *name) {
+    static const struct { const char *nid; void *fn; } table[] = {
+        {"9LCjpWyQ5Zc#libc", (void *)guest_pow},     {"1D0H2KNjshE#libc", (void *)guest_powf},
+        {"NVadfnzQhHQ#libc", (void *)guest_exp},     {"8zsu04XNsZ4#libc", (void *)guest_expf},
+        {"HUbZmOnT-Dg#libc", (void *)guest_atan2},   {"EH-x713A99c#libc", (void *)guest_atan2f},
+        {"pKwslsMUmSk#libc", (void *)guest_fmod},    {"88Vv-AzHVj8#libc", (void *)guest_fmodf},
+        {"T7uyNqP7vQA#libc", (void *)guest_tan},     {"ZE6RNL+eLbk#libc", (void *)guest_tanf},
+        {"OXmauLdQ8kY#libc", (void *)guest_atan},    {"weDug8QD-lE#libc", (void *)guest_atanf},
+        {"JBcgYuW8lPU#libc", (void *)guest_acos},    {"QI-x0SL8jhw#libc", (void *)guest_acosf},
+        {"7Ly52zaL44Q#libc", (void *)guest_asin},    {"GZWjF-YIFFk#libc", (void *)guest_asinf},
+    };
+    if (!libm_host_enabled()) return 0;
+    for (size_t i = 0; i < sizeof table / sizeof table[0]; ++i)
+        if (!strcmp(name, table[i].nid)) return (uintptr_t)table[i].fn;
+    return 0;
+}
 static ABI __attribute__((noreturn)) void guest_libc_exit(int status) {
     printf("Runtime: guest requested exit(%d)\n", status);
     runtime_finalize(NULL);
@@ -288,6 +329,8 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (!strcmp(name, "vNe1w4diLCs#libkernel")) return (uintptr_t)guest_tls_get_addr;
     if (!strcmp(name, "959qrazPIrg#libkernel")) return (uintptr_t)guest_procparam;
     if (!strcmp(name, "p5EcQeEeJAE#libkernel")) return (uintptr_t)guest_set_heap_api;
+    uintptr_t libm = libm_resolve(name);
+    if (libm) return libm;
     uintptr_t mutex = runtime_mutex_resolve(name);
     if (mutex) return mutex;
     uintptr_t thread = runtime_thread_resolve(name);
