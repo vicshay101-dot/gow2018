@@ -13,6 +13,7 @@ deps=$PWD/.local-deps/android
 out=$deps/steam-libs
 MAVEN_VERSION=3.9.11
 MAVEN_SHA512=bcfe4fe305c962ace56ac7b5fc7a08b87d5abd8b7e89027ab251069faebee516b0ded8961445d6d91ec1985dfe30f8153268843c89aa392733d1a3ec956c9978
+MAVEN_DEP_PLUGIN=3.8.1
 JAVASTEAM=1.8.0 XZ=1.12 ZSTD=1.5.7-6 ZXING=3.5.4 SPONGY=1.58.0.0
 if [[ ! -x $deps/maven/bin/mvn ]]; then
     curl -sfL -o "$deps/maven.tar.gz" \
@@ -37,8 +38,21 @@ cat > "$work/pom.xml" <<EOF
 </project>
 EOF
 rm -rf "$out"; mkdir -p "$out/jars" "$out/jni"
-"$deps/maven/bin/mvn" -q -B -f "$work/pom.xml" -Dmaven.repo.local="$deps/m2" \
-    dependency:copy-dependencies -DoutputDirectory="$work/deps" -DincludeScope=runtime
+mvn_ok=0
+for attempt in 1 2 3; do
+    if "$deps/maven/bin/mvn" -B -ntp -f "$work/pom.xml" -Dmaven.repo.local="$deps/m2" \
+        -Daether.connector.connectTimeout=15000 -Daether.connector.requestTimeout=60000 \
+        -Dmaven.wagon.http.retryHandler.count=3 \
+        "org.apache.maven.plugins:maven-dependency-plugin:$MAVEN_DEP_PLUGIN:copy-dependencies" \
+        -DoutputDirectory="$work/deps" -DincludeScope=runtime; then
+        mvn_ok=1
+        break
+    fi
+    echo "Maven dependency resolution failed (attempt $attempt/3); clearing .lastUpdated markers and retrying..." >&2
+    find "$deps/m2" -name '*.lastUpdated' -delete 2>/dev/null || true
+    sleep 5
+done
+[[ $mvn_ok -eq 1 ]] || { echo "Maven dependency resolution failed after 3 attempts" >&2; exit 1; }
 for file in "$work"/deps/*; do
     case $file in
         *.jar) cp "$file" "$out/jars/" ;;
