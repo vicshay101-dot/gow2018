@@ -34,11 +34,14 @@ src=$PWD/.local-deps/android/src/lsfg-vk-build-$LSFG_TAG
 build=$PWD/out/arm64/lsfg-build
 out=$PWD/out/arm64/lsfg
 if [[ ! -d $src/.git ]]; then
-    git clone -q -c advice.detachedHead=false --depth 1 --branch "$LSFG_TAG" --recurse-submodules \
-        --shallow-submodules https://github.com/PancakeTAS/lsfg-vk.git "$src"
+    git clone -q -c advice.detachedHead=false --depth 1 --branch "$LSFG_TAG" \
+        https://github.com/PancakeTAS/lsfg-vk.git "$src"
 fi
 [[ $(git -C "$src" rev-parse --short=7 HEAD) == "$LSFG_COMMIT" ]] ||
     { echo "$src is not at $LSFG_TAG ($LSFG_COMMIT)" >&2; exit 1; }
+# Upstream PancakeTAS/dxbc is 404; use the GameNative mirror at the pinned commit.
+git -C "$src" config submodule.thirdparty/dxbc.url https://github.com/GameNative/dxbc.git
+git -C "$src" submodule update --init --recursive --depth 1
 # Always the pinned source plus our patches, nothing else.
 git -C "$src" checkout -q -- . && git -C "$src" clean -qfd
 for patch in "${patches[@]}"; do
