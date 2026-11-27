@@ -474,6 +474,14 @@ inline void CallReplaced(CPUState& s, void* fn, GuestReplaceKind kind) {
             ReadScalarF32(s, 0), ReadScalarF32(s, 1)));
         return;
     }
+    case GUEST_REPLACE_PTR3_V128X2: {
+        using FnPtr3V128X2 = void (*)(uintptr_t, uintptr_t, uintptr_t, const float*, const float*);
+        reinterpret_cast<FnPtr3V128X2>(fn)(
+            s.gregs[REG_RDI], s.gregs[REG_RSI], s.gregs[REG_RDX],
+            reinterpret_cast<const float*>(Xmm(s, 0)),
+            reinterpret_cast<const float*>(Xmm(s, 1)));
+        return;
+    }
     case GUEST_REPLACE_FULL:
         CallHost(s, fn);
         return;

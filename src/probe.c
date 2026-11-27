@@ -1266,7 +1266,7 @@ int main(int argc, char **argv) {
             if (result) fail("module initializer failed");
         }
     }
-    runtime_native_cpu_install((uintptr_t)image, exec_size);
+    runtime_native_cpu_install((uintptr_t)image, exec_size, (uint64_t)size);
     runtime_profile_start((uintptr_t)image, (uint64_t)size);
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
     entered_game=1;

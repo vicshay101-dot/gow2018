@@ -78,6 +78,7 @@ typedef enum {
     GUEST_REPLACE_F32_TO_F32 = 2,
     GUEST_REPLACE_F32_I32_TO_F32 = 3,
     GUEST_REPLACE_F32_F32_TO_F32 = 4,
+    GUEST_REPLACE_PTR3_V128X2 = 5,
 } GuestReplaceKind;
 /* Replaces an entire guest function entry with `mov r10, rcx; syscall; ret` dispatching directly to
  * `host_fn` via `kind`. When non-null, `expected_bytes` (`expected_len >= 6`) must match memory at
