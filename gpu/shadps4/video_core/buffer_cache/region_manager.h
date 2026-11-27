@@ -285,7 +285,7 @@ private:
         }
     }
 
-    void KeepHotPagesModified(size_t start_page, size_t end_page) {
+    void ExpireHotPagesIfNeeded() {
         if (num_hot == 0) {
             return;
         }
@@ -296,14 +296,31 @@ private:
             hot.Clear();
             write_faults.fill(0);
             num_hot = 0;
+            hot_refreshed_epoch = 0;
+        }
+    }
+
+    void RefreshHotPagesForEpoch() {
+        if (num_hot == 0) {
             return;
         }
-        cpu |= RegionBits(hot, start_page, end_page);
+        ExpireHotPagesIfNeeded();
+        if (num_hot == 0) {
+            UpdateProtection<true, false>();
+            return;
+        }
+        const std::uint64_t epoch =
+            Gow3Stats::hot_upload_epoch.load(std::memory_order_relaxed);
+        if (hot_refreshed_epoch != epoch) {
+            cpu |= hot;
+            hot_refreshed_epoch = epoch;
+        }
     }
 
     std::array<u8, NUM_PAGES_PER_REGION> write_faults{};
     RegionBits hot{};
     u32 num_hot = 0;
+    std::uint64_t hot_refreshed_epoch = 0;
     std::chrono::steady_clock::time_point hot_since{};
 
     PageManager* tracker;
