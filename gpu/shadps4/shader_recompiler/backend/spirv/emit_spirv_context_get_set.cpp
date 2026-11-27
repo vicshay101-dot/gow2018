@@ -280,7 +280,7 @@ void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, Id value, u32 elemen
         const auto [component_type, is_integer] = OutputAttrComponentType(ctx, attr);
         if (is_integer) {
             ctx.OpStore(pointer, ctx.OpBitcast(component_type, value));
-        } else if (IR::IsMrt(attr) && component_type == ctx.F32[1]) {
+        } else if (IR::IsMrt(attr) && component_type.value == ctx.F32[1].value) {
             // NaN/Inf written to float (R16G16B16A16_SFLOAT etc.) render targets spread through
             // bloom/volumetrics/tonemap and show up as solid cyan/yellow blocks. Flush NaN to 0
             // and clamp to the finite fp16 range. Disable with GOW3_MRT_SANITIZE=0.
