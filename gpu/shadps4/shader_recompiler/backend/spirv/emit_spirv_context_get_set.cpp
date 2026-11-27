@@ -10,6 +10,7 @@
 #include "shader_recompiler/ir/patch.h"
 #include "shader_recompiler/runtime_info.h"
 
+#include <cstdlib>
 #include <magic_enum/magic_enum.hpp>
 
 namespace Shader::Backend::SPIRV {
@@ -279,6 +280,22 @@ void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, Id value, u32 elemen
         const auto [component_type, is_integer] = OutputAttrComponentType(ctx, attr);
         if (is_integer) {
             ctx.OpStore(pointer, ctx.OpBitcast(component_type, value));
+        } else if (IR::IsMrt(attr) && component_type == ctx.F32[1]) {
+            // NaN/Inf written to float (R16G16B16A16_SFLOAT etc.) render targets spread through
+            // bloom/volumetrics/tonemap and show up as solid cyan/yellow blocks. Flush NaN to 0
+            // and clamp to the finite fp16 range. Disable with GOW3_MRT_SANITIZE=0.
+            static const bool enabled = [] {
+                const char* env = std::getenv("GOW3_MRT_SANITIZE");
+                return !env || env[0] != '0';
+            }();
+            if (enabled) {
+                const Id is_nan{ctx.OpIsNan(ctx.U1[1], value)};
+                const Id clamped{ctx.OpFClamp(ctx.F32[1], value, ctx.ConstF32(-65504.f),
+                                              ctx.ConstF32(65504.f))};
+                ctx.OpStore(pointer, ctx.OpSelect(ctx.F32[1], is_nan, ctx.ConstF32(0.f), clamped));
+            } else {
+                ctx.OpStore(pointer, value);
+            }
         } else {
             ctx.OpStore(pointer, value);
         }

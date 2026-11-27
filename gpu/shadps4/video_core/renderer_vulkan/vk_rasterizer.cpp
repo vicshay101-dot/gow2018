@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cstdlib>
+#include <vector>
+
 #include <xxhash.h>
 #include "video_core/renderer_vulkan/ui_composition.h"
 #include "gow3_toggles.h"
@@ -221,6 +225,29 @@ bool ShouldSkipShadowAtlas(Vulkan::Runtime& runtime, Vulkan::Scheduler& schedule
 }
 
 bool ShouldSkipVolumetricFog(u64 pgm_hash) {
+    // Debug: GOW3_SKIP_PGM=hash1,hash2 (hex, as printed in logs) skips every dispatch/draw of
+    // those shader programs, to bisect which pass produces solid cyan/yellow blocks.
+    static const std::vector<u64> skip_list = [] {
+        std::vector<u64> list;
+        if (const char* env = std::getenv("GOW3_SKIP_PGM")) {
+            const char* p = env;
+            while (*p) {
+                char* end = nullptr;
+                const u64 value = std::strtoull(p, &end, 16);
+                if (end == p) {
+                    ++p;
+                    continue;
+                }
+                list.push_back(value);
+                p = end;
+            }
+        }
+        return list;
+    }();
+    if (!skip_list.empty() &&
+        std::find(skip_list.begin(), skip_list.end(), pgm_hash) != skip_list.end()) {
+        return true;
+    }
     // Never throttle cs c6d0b871 or its vertical blur consumer cs d127d058 (they share
     // aliased 0x102a880000 with bloom cs fd824025). Only throttle the atomic 3D volume passes
     // when explicitly enabled via env (default 1 = disabled for clean rendering).
