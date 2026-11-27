@@ -869,7 +869,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 rasterizer->WaitDeferredSignals();
             }
             if (rasterizer && IsGuestSyncOpcode(opcode)) {
-                rasterizer->NotifyGuestSync();
+                rasterizer->NotifyGuestSync(opcode == PM4ItOpcode::WaitRegMem);
             }
             switch (opcode) {
             case PM4ItOpcode::Nop: {
@@ -1537,7 +1537,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
 
         const auto* it_body = reinterpret_cast<const u32*>(header) + 1;
         if (rasterizer && IsGuestSyncOpcode(opcode)) {
-            rasterizer->NotifyGuestSync();
+            rasterizer->NotifyGuestSync(opcode == PM4ItOpcode::WaitRegMem);
         }
         switch (opcode) {
         case PM4ItOpcode::Nop: {

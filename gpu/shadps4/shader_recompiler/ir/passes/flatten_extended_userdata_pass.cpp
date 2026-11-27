@@ -396,10 +396,11 @@ void RunSrtProgram(const u32* program, const u32* user_data, u32* flat) {
             const u32 off_dw = values[--count];
             const u32 hi = values[--count];
             const u32 lo = values[--count];
-            const u64 addr = (static_cast<u64>(hi) << 32 | lo) +
-                             (static_cast<u64>(off_dw) << 2);
+            // Mask to 48-bit virtual address: AmdGpu::Buffer (V#) packs stride/swizzle in hi[31:16].
+            const u64 base_addr = (static_cast<u64>(hi & 0xFFFFu) << 32) | lo;
+            const u64 addr = base_addr + (static_cast<u64>(off_dw) << 2);
             u32 value = 0;
-            if (!zeroed && addr >= 0x10000ULL) {
+            if (!zeroed && base_addr >= 0x10000ULL) {
                 fault_pc = op_pc;
                 fault_addr = addr;
                 fault_off = off_dw;

@@ -48,9 +48,11 @@ public:
                         AmdGpu::Liverpool* liverpool);
     ~Rasterizer();
 
-    void NotifyGuestSync() noexcept {
+    void NotifyGuestSync(bool cpu_sync = false) noexcept {
         guest_sync_epoch.fetch_add(1, std::memory_order_relaxed);
-        Gow3Stats::hot_upload_epoch.fetch_add(1, std::memory_order_relaxed);
+        if (cpu_sync) {
+            Gow3Stats::hot_upload_epoch.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     [[nodiscard]] Runtime& GetRuntime() noexcept {

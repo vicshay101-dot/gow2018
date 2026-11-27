@@ -148,10 +148,6 @@ def derive(game, config, state_path, env):
         updates['GOW3_SCREEN_H'] = env.get('GOW3_SCREEN_H', default_h)
         updates['GOW3_HOT_PAGES'] = env.get('GOW3_HOT_PAGES', '1')
         updates['GOW3_WRITE_FAULT_SYNC'] = env.get('GOW3_WRITE_FAULT_SYNC', '2')
-        updates['GOW3_SHADOW_RATE'] = env.get('GOW3_SHADOW_RATE', '0')
-        updates['GOW3_VOLFOG_RATE'] = env.get('GOW3_VOLFOG_RATE', '2')
-        updates['GOW3_VOL3D_RATE'] = env.get('GOW3_VOL3D_RATE', '2')
-        updates['GOW3_DESCRIPTOR_TEMPLATE'] = env.get('GOW3_DESCRIPTOR_TEMPLATE', '1')
         # Turnip: let the driver pick GMEM (tiled) vs sysmem per render pass instead of
         # forcing sysmem for every pass (GPU-tick waits were ~20% of the frame).
         # TU_DEBUG=sysmem restores the old behaviour.

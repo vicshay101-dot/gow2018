@@ -111,12 +111,24 @@ public:
         const u32 slot = reason < NumReasons ? reason : ReasonRasterizer;
         ++drains_by_reason[slot];
         const u64 start = Common::FencedRDTSC();
-        for (u32 spins = 0; consumed.load(std::memory_order_acquire) != head; ++spins) {
-            if (spins < 4096) {
+        while (consumed.load(std::memory_order_acquire) != head) {
+            bool done = false;
+            for (u32 spins = 0; spins < 4096; ++spins) {
                 COMMON_CPU_RELAX();
-            } else {
-                std::this_thread::yield();
+                if (consumed.load(std::memory_order_acquire) == head) {
+                    done = true;
+                    break;
+                }
             }
+            if (done) {
+                break;
+            }
+            const u32 seen = drain_wake.load(std::memory_order_seq_cst);
+            draining.store(true, std::memory_order_seq_cst);
+            if (consumed.load(std::memory_order_seq_cst) != head) {
+                drain_wake.wait(seen, std::memory_order_seq_cst);
+            }
+            draining.store(false, std::memory_order_relaxed);
         }
         const u64 waited = Common::FencedRDTSC() - start;
         drain_cycles += waited;
@@ -196,14 +208,24 @@ private:
             const auto* header = reinterpret_cast<const Header*>(ring.get() + at % Capacity);
             if (header->size == 0) {
                 at += Capacity - at % Capacity;
-                consumed.store(at, std::memory_order_release);
+                consumed.store(at, std::memory_order_seq_cst);
+                if (draining.load(std::memory_order_seq_cst) &&
+                    at == published.load(std::memory_order_acquire)) {
+                    drain_wake.fetch_add(1, std::memory_order_seq_cst);
+                    drain_wake.notify_one();
+                }
                 continue;
             }
             const u64 start = Common::FencedRDTSC();
             handler(context, reinterpret_cast<const u8*>(header + 1), header->payload);
             busy_cycles.fetch_add(Common::FencedRDTSC() - start, std::memory_order_relaxed);
             at += header->size;
-            consumed.store(at, std::memory_order_release);
+            consumed.store(at, std::memory_order_seq_cst);
+            if (draining.load(std::memory_order_seq_cst) &&
+                at == published.load(std::memory_order_acquire)) {
+                drain_wake.fetch_add(1, std::memory_order_seq_cst);
+                drain_wake.notify_one();
+            }
         }
     }
 
@@ -217,6 +239,8 @@ private:
     alignas(64) std::atomic<u64> consumed{0};
     alignas(64) std::atomic<u32> wake{0};
     std::atomic<bool> sleeping{false};
+    alignas(64) std::atomic<u32> drain_wake{0};
+    std::atomic<bool> draining{false};
     std::atomic<u32> stage_b_tid{0};
     std::jthread thread;
 };
