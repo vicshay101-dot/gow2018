@@ -252,9 +252,10 @@ private:
     // A short period re-protects thousands of pages at once and each faults again before it is
     // hot, a fault storm (a 2 s period gave ~20k faults/s and frame spikes).
     static constexpr u8 HotFaults = 2;
-    // Upper bound on the global hot set (pages). The opt-in run that grew to ~14k pages (56 MB)
-    // re-uploaded all of them on every use; a few thousand pages cover the pages that fault most.
-    static constexpr std::int64_t MaxHotPages = 512;
+    // Upper bound on the global hot set (pages). With epoch-gated RefreshHotPagesForEpoch(),
+    // hot pages are uploaded at most once per submit/sync instead of every binding, so 2048 pages
+    // (8 MiB) covers per-frame constants/skinning without fault storms or excessive uploads.
+    static constexpr std::int64_t MaxHotPages = 2048;
     static constexpr auto HotPeriod = std::chrono::seconds(300);
 
     void CountWriteFaults(size_t start_page, size_t end_page) {

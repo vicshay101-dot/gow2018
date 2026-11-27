@@ -53,7 +53,20 @@ static Id BindlessSlot(EmitContext& ctx, const Info::BindlessImageRecipe& recipe
         return ComputeBindlessIndex(ctx, recipe);
     }
     const auto it = ctx.bindless_index_by_image.find(image_idx);
-    return it == ctx.bindless_index_by_image.end() ? Id{} : it->second;
+    if (it == ctx.bindless_index_by_image.end()) {
+        return {};
+    }
+    static std::mutex value_log_mutex;
+    static std::unordered_set<u64> value_logged_pgms;
+    {
+        std::scoped_lock lock{value_log_mutex};
+        if (value_logged_pgms.insert(ctx.info.pgm_hash).second) {
+            std::printf("SHARP_INDEX_VALUE pgm=%#018llx base_dw=%u stride_dw=%u\n",
+                        static_cast<unsigned long long>(ctx.info.pgm_hash), recipe.table_base_dw,
+                        recipe.table_stride_dw);
+        }
+    }
+    return it->second;
 }
 
 void EmitBindlessImageIndex(EmitContext& ctx, u32 image_binding, Id index) {

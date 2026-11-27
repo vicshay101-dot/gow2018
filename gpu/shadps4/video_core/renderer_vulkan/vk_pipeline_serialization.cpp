@@ -32,8 +32,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 26u; // gow3: merge origin/android (SRT FindILsb fallback) + bindless + R/B swap
-static constexpr u32 ShaderMetaVersion = 26u; // gow3: merge origin/android (SRT FindILsb fallback) + bindless + R/B swap
+static constexpr u32 ShaderBinaryVersion = 27u; // gow3: SHARP_INDEX_VALUE log + MaxHotPages=2048
+static constexpr u32 ShaderMetaVersion = 27u; // gow3: SHARP_INDEX_VALUE log + MaxHotPages=2048
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 
