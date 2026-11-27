@@ -18,7 +18,11 @@ class AndroidPerfBudgetTests(unittest.TestCase):
         self.assertIn('if (!Enabled())', draw)
         self.assertIn('return {};', draw)
         raster = (ROOT / 'gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp').read_text()
-        self.assertIn('if (std::getenv("GOW3_ANDROID_PORT")) return false;', raster)
+        # The two-stage draw pipeline is on by default on Android (GPU thread saturated);
+        # GOW3_DRAW_PIPE=0 still selects the direct path.
+        wanted = raster.split('bool Rasterizer::DrawPipeWanted() {', 1)[1].split('\n}', 1)[0]
+        self.assertNotIn('return false;', wanted)
+        self.assertIn('Gow3Threads::Available() >= 8', wanted)
 
     def test_two_frames_in_flight_on_new_android_installs(self):
         ini = (ROOT / 'tools/android/config/gow3-default.ini').read_text()
