@@ -111,16 +111,38 @@ static void *allocate_image(size_t size) {
     if (opt || (env && *env && strcmp(env,"0"))) {
         printf("Image placement: PS4 base 0x400000 disabled by %s\n", opt ? "gow2018_high_image" : "GOW3_HIGH_IMAGE");
     } else if (PS4_EXECUTABLE_BASE+size<=UINT64_C(0x80000000)) {
-        void *want=(void *)(uintptr_t)PS4_EXECUTABLE_BASE;
+        int first_err=0;
+        for (uint64_t cand=PS4_EXECUTABLE_BASE; cand+size<=UINT64_C(0x80000000);
+             cand = (cand==PS4_EXECUTABLE_BASE) ? UINT64_C(0x04000000) : cand+UINT64_C(0x01000000)) {
+            void *want=(void *)(uintptr_t)cand;
 #ifdef MAP_FIXED_NOREPLACE
-        void *p=mmap(want,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+            void *p=mmap(want,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
 #else
-        void *p=mmap(want,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+            void *p=mmap(want,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
 #endif
-        if (p==want) { printf("Image placement: PS4 executable base 0x400000\n"); return p; }
-        int err=errno;
-        if (p!=MAP_FAILED) munmap(p,size); /* kernels without MAP_FIXED_NOREPLACE treat it as a hint */
-        printf("Image placement: 0x400000 unavailable (errno=%d), using the guest low area\n", p==MAP_FAILED ? err : 0);
+            if (p==want) {
+                if (cand==PS4_EXECUTABLE_BASE) {
+                    printf("Image placement: PS4 executable base 0x400000\n");
+                } else {
+                    printf("Image placement: 0x400000 unavailable (errno=%d), mapped 31-bit base 0x%llx\n",
+                           first_err, (unsigned long long)cand);
+                }
+                return p;
+            }
+            int err=errno;
+            if (!first_err) first_err=(p==MAP_FAILED ? err : 0);
+            if (p!=MAP_FAILED) {
+#ifndef MAP_FIXED_NOREPLACE
+                if ((uint64_t)(uintptr_t)p+size<=UINT64_C(0x80000000)) {
+                    printf("Image placement: 0x400000 unavailable (errno=%d), mapped 31-bit base 0x%llx\n",
+                           first_err, (unsigned long long)(uintptr_t)p);
+                    return p;
+                }
+#endif
+                munmap(p,size); /* kernels without MAP_FIXED_NOREPLACE treat it as a hint */
+            }
+        }
+        printf("Image placement: 0x400000..0x80000000 unavailable (errno=%d), using the guest low area\n", first_err);
     }
 #endif
     return allocate(size);
