@@ -6,11 +6,15 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <memory>
+
+#include <xxhash.h>
 
 #include "gow3_toggles.h"
 #include "common/div_ceil.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
+#include "core/memory.h"
 
 #include "common/spin_lock.h"
 #ifdef __unix__
@@ -148,7 +152,7 @@ public:
 
         RegionBits& bits = GetRegionBits<type>();
         if constexpr (type == Type::CPU) {
-            RefreshHotPagesForEpoch();
+            RefreshHotPagesForEpoch(start_page, end_page);
         }
         // gow3: nothing modified in the range means nothing to clear or re-protect
         // (writeable == cpu | hot); this runs for every buffer binding, so it is checked
@@ -192,11 +196,13 @@ public:
 
         const RegionBits& bits = GetRegionBits<type>();
         if constexpr (type == Type::CPU) {
-            if (num_hot != 0 &&
-                hot_refreshed_epoch !=
-                    Gow3Stats::hot_upload_epoch.load(std::memory_order_relaxed) &&
-                hot.AnyInRange(start_page, end_page)) {
-                return true;
+            if (num_hot != 0 && hot.AnyInRange(start_page, end_page)) {
+                const std::uint64_t epoch =
+                    Gow3Stats::hot_upload_epoch.load(std::memory_order_relaxed);
+                if (hot_refreshed_epoch != epoch ||
+                    (hot & ~hot_checked).AnyInRange(start_page, end_page)) {
+                    return true;
+                }
             }
         }
         return bits.AnyInRange(start_page, end_page);
@@ -280,6 +286,8 @@ private:
                     hot_since = std::chrono::steady_clock::now();
                 }
                 hot.Set(page);
+                hot_checked.Unset(page);
+                hot_hashed.Unset(page);
                 ++num_hot;
                 Gow3Stats::hot_pages.fetch_add(1, std::memory_order_relaxed);
             }
@@ -295,13 +303,16 @@ private:
             // Re-protect them (on this upload) and start counting again.
             Gow3Stats::hot_pages.fetch_sub(num_hot, std::memory_order_relaxed);
             hot.Clear();
+            hot_checked.Clear();
+            hot_hashed.Clear();
+            hot_hashes.reset();
             write_faults.fill(0);
             num_hot = 0;
             hot_refreshed_epoch = 0;
         }
     }
 
-    void RefreshHotPagesForEpoch() {
+    void RefreshHotPagesForEpoch(size_t start_page, size_t end_page) {
         if (num_hot == 0) {
             return;
         }
@@ -313,13 +324,42 @@ private:
         const std::uint64_t epoch =
             Gow3Stats::hot_upload_epoch.load(std::memory_order_relaxed);
         if (hot_refreshed_epoch != epoch) {
-            cpu |= hot;
             hot_refreshed_epoch = epoch;
+            hot_checked.Clear();
+        }
+        const RegionBits candidates = hot & ~hot_checked & ~cpu & ~gpu & readable;
+        if (!candidates.AnyInRange(start_page, end_page)) {
+            return;
+        }
+        if (!hot_hashes) {
+            hot_hashes = std::make_unique<std::array<u64, NUM_PAGES_PER_REGION>>();
+        }
+        const RegionBits to_check(candidates, start_page, end_page);
+        auto* memory = Core::Memory::Instance();
+        for (const auto& [range_start, range_end] : to_check) {
+            for (size_t page = range_start; page < range_end; ++page) {
+                hot_checked.Set(page);
+                const VAddr page_addr = cpu_addr + page * TRACKER_BYTES_PER_PAGE;
+                if (memory->ClampRangeSize(page_addr, TRACKER_BYTES_PER_PAGE) !=
+                    TRACKER_BYTES_PER_PAGE) {
+                    continue;
+                }
+                const u64 hash = XXH3_64bits(reinterpret_cast<const void*>(page_addr),
+                                             TRACKER_BYTES_PER_PAGE);
+                if (!hot_hashed.Get(page) || (*hot_hashes)[page] != hash) {
+                    (*hot_hashes)[page] = hash;
+                    hot_hashed.Set(page);
+                    cpu.Set(page);
+                }
+            }
         }
     }
 
     std::array<u8, NUM_PAGES_PER_REGION> write_faults{};
     RegionBits hot{};
+    RegionBits hot_checked{};
+    RegionBits hot_hashed{};
+    std::unique_ptr<std::array<u64, NUM_PAGES_PER_REGION>> hot_hashes;
     u32 num_hot = 0;
     std::uint64_t hot_refreshed_epoch = 0;
     std::chrono::steady_clock::time_point hot_since{};

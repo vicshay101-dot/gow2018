@@ -154,10 +154,6 @@ if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow
     export GOW3_READBACKS=${GOW3_READBACKS:-1}
     export GOW3_ASYNC_BUFFER_READBACK=${GOW3_ASYNC_BUFFER_READBACK:-1}
     export GOW3_WRITE_FAULT_SYNC=${GOW3_WRITE_FAULT_SYNC:-2}
-    export GOW3_SHADOW_RATE=${GOW3_SHADOW_RATE:-0}
-    export GOW3_VOLFOG_RATE=${GOW3_VOLFOG_RATE:-2}
-    export GOW3_VOL3D_RATE=${GOW3_VOL3D_RATE:-2}
-    export GOW3_DESCRIPTOR_TEMPLATE=${GOW3_DESCRIPTOR_TEMPLATE:-1}
     # GMEM/sysmem chosen by Turnip per pass; export TU_DEBUG=sysmem to force the old path.
     [ -n "${TU_DEBUG:-}" ] && export TU_DEBUG
     export GOW3_ADPF=${GOW3_ADPF:-1}

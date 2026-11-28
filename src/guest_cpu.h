@@ -71,6 +71,21 @@ int guest_cpu_handle_fault(int sig, siginfo_t *info, void *ucontext);
  * (bbport_guest_hooks.cpp uses int3 there): returns 0. */
 typedef void (*GuestHook)(GuestRegs *regs);
 int guest_cpu_hook(uintptr_t address, size_t size, GuestHook hook);
+/* Calling-convention fast paths for guest_cpu_replace_function (avoid full XMM/stack marshaling). */
+typedef enum {
+    GUEST_REPLACE_FULL = 0,
+    GUEST_REPLACE_INT6 = 1,
+    GUEST_REPLACE_F32_TO_F32 = 2,
+    GUEST_REPLACE_F32_I32_TO_F32 = 3,
+    GUEST_REPLACE_F32_F32_TO_F32 = 4,
+    GUEST_REPLACE_PTR3_V128X2 = 5,
+} GuestReplaceKind;
+/* Replaces an entire guest function entry with `mov r10, rcx; syscall; ret` dispatching directly to
+ * `host_fn` via `kind`. When non-null, `expected_bytes` (`expected_len >= 6`) must match memory at
+ * `address` before patching. Returns 1 on success, 0 on mismatch/unsupported host. */
+int guest_cpu_replace_function(uintptr_t address, void *host_fn, GuestReplaceKind kind,
+                               const unsigned char *expected_bytes, size_t expected_len,
+                               const char *name);
 /* The guest's time stamp counter (RDTSC) and its frequency in Hz. */
 uint64_t guest_cpu_tsc(void);
 uint64_t guest_cpu_tsc_frequency(void);

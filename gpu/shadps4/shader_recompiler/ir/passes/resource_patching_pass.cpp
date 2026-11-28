@@ -629,40 +629,84 @@ static bool ExtractTableAddressing(const IR::Value& dw0_val, PendingBindlessReci
     return false;
 }
 
+static void FindDynamicIndexCandidates(const IR::Value& value, int depth,
+                                       std::vector<const IR::Inst*>& visited,
+                                       std::vector<const IR::Inst*>& out_candidates) {
+    if (depth <= 0 || value.IsImmediate()) {
+        return;
+    }
+    const IR::Inst* inst = value.TryInst();
+    if (!inst || std::find(visited.begin(), visited.end(), inst) != visited.end()) {
+        return;
+    }
+    visited.push_back(inst);
+    const IR::Opcode op = inst->GetOpcode();
+    if (op == IR::Opcode::FindILsb32 || op == IR::Opcode::GetAttributeU32) {
+        out_candidates.push_back(inst);
+    }
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        FindDynamicIndexCandidates(inst->Arg(i), depth - 1, visited, out_candidates);
+    }
+}
+
 // The T# is read from a table whose slot is a value the shader computes (a bit-scan loop over a mask,
-// for instance): dw0 = ReadConst(ptr, ((X * stride_bytes) + base_bytes) >> s). X is returned so the
-// backend can use it as the array slot; the table layout comes from ExtractTableAddressing.
+// for instance): dw0 = ReadConst(ptr, ((X * stride_bytes) + base_bytes) >> s), or any linear form
+// in a dynamic FindILsb32 / GetAttributeU32 index. X is returned so the backend can use it as the
+// array slot; the table layout comes from ExtractTableAddressing.
 static bool TryMatchValueIndex(const IR::Value& dw0_val, PendingBindlessRecipe& out,
                                IR::Value& out_x) {
     const IR::Inst* dw0 = UnwrapPhiInst(dw0_val);
     if (!dw0 || dw0->GetOpcode() != IR::Opcode::ReadConst || dw0->NumArgs() < 2) {
         return false;
     }
-    const IR::Inst* shr = UnwrapPhiInst(dw0->Arg(1));
-    if (!shr || shr->GetOpcode() != IR::Opcode::ShiftRightLogical32 || shr->NumArgs() < 2 ||
-        !shr->Arg(1).IsImmediate() || shr->Arg(1).Type() != IR::Type::U32) {
-        return false;
+    auto test_linear = [&](const IR::Inst* cand_inst, IR::Value cand_val) -> bool {
+        if (!cand_inst) {
+            return false;
+        }
+        u32 off0 = 0;
+        u32 off1 = 0;
+        u32 off2 = 0;
+        if (!EvalDwordOffsetWithIndex(dw0->Arg(1), cand_inst, 0, 16, off0) ||
+            !EvalDwordOffsetWithIndex(dw0->Arg(1), cand_inst, 1, 16, off1) ||
+            !EvalDwordOffsetWithIndex(dw0->Arg(1), cand_inst, 2, 16, off2)) {
+            return false;
+        }
+        if (off1 <= off0 || (off2 - off1) != (off1 - off0)) {
+            return false;
+        }
+        out.index_inst = cand_inst;
+        out_x = cand_val;
+        return true;
+    };
+
+    if (const IR::Inst* shr = UnwrapPhiInst(dw0->Arg(1));
+        shr && shr->GetOpcode() == IR::Opcode::ShiftRightLogical32 && shr->NumArgs() >= 2 &&
+        shr->Arg(1).IsImmediate() && shr->Arg(1).Type() == IR::Type::U32) {
+        IR::Value mul_val;
+        [[maybe_unused]] u32 base_bytes = 0;
+        if (MatchCommutativeImm(UnwrapPhiInst(shr->Arg(0)), IR::Opcode::IAdd32, mul_val,
+                                base_bytes)) {
+            IR::Value x_val;
+            u32 stride_bytes = 0;
+            if (MatchCommutativeImm(UnwrapPhiInst(mul_val), IR::Opcode::IMul32, x_val,
+                                    stride_bytes) &&
+                stride_bytes != 0 && !x_val.IsImmediate() && x_val.Type() == IR::Type::U32) {
+                if (test_linear(UnwrapPhiInst(x_val), x_val)) {
+                    return true;
+                }
+            }
+        }
     }
-    IR::Value mul_val;
-    [[maybe_unused]] u32 base_bytes = 0;
-    if (!MatchCommutativeImm(UnwrapPhiInst(shr->Arg(0)), IR::Opcode::IAdd32, mul_val, base_bytes)) {
-        return false;
+
+    std::vector<const IR::Inst*> visited;
+    std::vector<const IR::Inst*> candidates;
+    FindDynamicIndexCandidates(dw0->Arg(1), 12, visited, candidates);
+    for (const IR::Inst* cand : candidates) {
+        if (test_linear(cand, IR::Value{const_cast<IR::Inst*>(cand)})) {
+            return true;
+        }
     }
-    IR::Value x_val;
-    u32 stride_bytes = 0;
-    if (!MatchCommutativeImm(UnwrapPhiInst(mul_val), IR::Opcode::IMul32, x_val, stride_bytes)) {
-        return false;
-    }
-    if (stride_bytes == 0 || x_val.IsImmediate() || x_val.Type() != IR::Type::U32) {
-        return false;
-    }
-    const IR::Inst* x_inst = UnwrapPhiInst(x_val);
-    if (!x_inst) {
-        return false;
-    }
-    out.index_inst = x_inst;
-    out_x = x_val;
-    return true;
+    return false;
 }
 
 static void DumpProbeTree(u64 pgm_hash, const IR::Value& value, int depth, int indent) {
@@ -811,28 +855,28 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
     u32 image_binding = descriptors.Add(image_res);
 
     // Written images also take the bindless path: the storage array serves them (see emit_spirv_image).
-    if (IsBindlessComputeTarget(info.pgm_hash)) {
-        // Probe: one line per image of a target pgm, so the log shows whether this pass ran for it.
+    if (profile.supports_bindless_images) {
         bool chain_found = false;
         bool table_ok = false;
         u32 first_op = 0;
-        if (profile.supports_bindless_images) {
-            for (u32 i = 0; i < resource.sharps[0].num_dwords; ++i) {
-                PendingBindlessRecipe pending{};
-                u32 budget = 4096;
-                if (FindIndexChainInValue(resource.sharps[0].dwords[i], 32, budget, pending)) {
-                    chain_found = true;
-                    if (ExtractTableAddressing(resource.sharps[0].dwords[0], pending)) {
-                        table_ok = true;
+        for (u32 i = 0; i < resource.sharps[0].num_dwords; ++i) {
+            PendingBindlessRecipe pending{};
+            u32 budget = 4096;
+            if (FindIndexChainInValue(resource.sharps[0].dwords[i], 32, budget, pending)) {
+                chain_found = true;
+                if (ExtractTableAddressing(resource.sharps[0].dwords[0], pending)) {
+                    table_ok = true;
+                    if (info.bindless_image_recipes.size() + pending_bindless.size() <
+                        Info::MaxBindlessRecipes) {
                         pending.recipe.image_binding = image_binding;
                         pending_bindless.push_back(pending);
-                        break;
                     }
+                    break;
                 }
             }
         }
         bool value_ok = false;
-        if (!table_ok && profile.supports_bindless_images) {
+        if (!table_ok) {
             PendingBindlessRecipe pending{};
             IR::Value x_val;
             if (TryMatchValueIndex(resource.sharps[0].dwords[0], pending, x_val) &&
@@ -841,26 +885,39 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
                 pending.recipe.image_binding = image_binding;
                 pending.recipe.index_is_value = true;
                 pending.recipe.valid = true;
-                if (!info.FindBindlessImageRecipe(image_binding)) {
+                if (!info.FindBindlessImageRecipe(image_binding) &&
+                    info.bindless_image_recipes.size() < Info::MaxBindlessRecipes) {
                     info.bindless_image_recipes.push_back(pending.recipe);
                 }
-                IR::IREmitter hint{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
-                hint.BindlessImageIndex(image_binding, IR::U32{x_val});
-                value_ok = true;
+                if (info.FindBindlessImageRecipe(image_binding)) {
+                    if (const IR::Inst* x_inst = x_val.TryInst();
+                        x_inst && x_inst->GetOpcode() == IR::Opcode::GetAttributeU32 &&
+                        x_inst->NumArgs() >= 2 && x_inst->Arg(0).IsImmediate() &&
+                        x_inst->Arg(1).IsImmediate() && x_inst->Arg(1).Type() == IR::Type::U32) {
+                        info.loads.Set(x_inst->Arg(0).Attribute(), x_inst->Arg(1).U32());
+                    }
+                    IR::IREmitter hint{*inst.GetParent(),
+                                       IR::Block::InstructionList::s_iterator_to(inst)};
+                    hint.BindlessImageIndex(image_binding, IR::U32{x_val});
+                    value_ok = true;
+                }
             }
         }
-        if (const IR::Inst* dw0 = resource.sharps[0].dwords[0].TryInst()) {
-            first_op = static_cast<u32>(dw0->GetOpcode());
-        }
-        std::printf("BINDLESS_PROBE pgm=%#018llx supported=%d written=%d chain=%d table=%d value=%d "
-                    "dw0_op=%u\n",
-                    static_cast<unsigned long long>(info.pgm_hash),
-                    profile.supports_bindless_images ? 1 : 0, is_written ? 1 : 0,
-                    chain_found ? 1 : 0, table_ok ? 1 : 0, value_ok ? 1 : 0, first_op);
-        static thread_local u64 last_dumped = 0;
-        if (chain_found && !table_ok && !value_ok && last_dumped != info.pgm_hash) {
-            last_dumped = info.pgm_hash;
-            DumpProbeTree(info.pgm_hash, resource.sharps[0].dwords[0], 7, 0);
+        if (IsBindlessComputeTarget(info.pgm_hash)) {
+            if (const IR::Inst* dw0 = resource.sharps[0].dwords[0].TryInst()) {
+                first_op = static_cast<u32>(dw0->GetOpcode());
+            }
+            std::printf(
+                "BINDLESS_PROBE pgm=%#018llx supported=%d written=%d chain=%d table=%d value=%d "
+                "dw0_op=%u\n",
+                static_cast<unsigned long long>(info.pgm_hash),
+                profile.supports_bindless_images ? 1 : 0, is_written ? 1 : 0, chain_found ? 1 : 0,
+                table_ok ? 1 : 0, value_ok ? 1 : 0, first_op);
+            static thread_local u64 last_dumped = 0;
+            if (chain_found && !table_ok && !value_ok && last_dumped != info.pgm_hash) {
+                last_dumped = info.pgm_hash;
+                DumpProbeTree(info.pgm_hash, resource.sharps[0].dwords[0], 7, 0);
+            }
         }
     }
 
@@ -1504,8 +1561,69 @@ void PatchImageArgs(IR::Inst& inst, Info& info) {
     }
 }
 
-void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resources,
+namespace {
+
+bool ValueDependsOnDynamicIndex(const IR::Value& value, int depth,
+                                std::vector<const IR::Inst*>& visited) {
+    if (depth <= 0 || value.IsImmediate()) {
+        return false;
+    }
+    const IR::Inst* inst = value.TryInst();
+    if (!inst) {
+        return false;
+    }
+    const IR::Opcode op = inst->GetOpcode();
+    if (op == IR::Opcode::GetAttributeU32 || op == IR::Opcode::FindILsb32) {
+        return true;
+    }
+    if (std::find(visited.begin(), visited.end(), inst) != visited.end()) {
+        return false;
+    }
+    visited.push_back(inst);
+    for (size_t i = 0; i < inst->NumArgs(); ++i) {
+        if (ValueDependsOnDynamicIndex(inst->Arg(i), depth - 1, visited)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool HasLiveNonCompositeUse(const IR::Inst* inst, int depth = 4) {
+    if (!inst || depth <= 0) {
+        return false;
+    }
+    for (const auto& use : inst->Uses()) {
+        const IR::Inst* user = use.user;
+        if (!user) {
+            continue;
+        }
+        const IR::Opcode uop = user->GetOpcode();
+        if (uop == IR::Opcode::CompositeConstructU32x2 ||
+            uop == IR::Opcode::CompositeConstructU32x4) {
+            if (HasLiveNonCompositeUse(user, depth - 1)) {
+                return true;
+            }
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool IsFlatSourceInst(const IR::Inst* inst) {
+    if (!inst) {
+        return false;
+    }
+    const IR::Opcode op = inst->GetOpcode();
+    return op == IR::Opcode::GetUserData || op == IR::Opcode::ReadConst ||
+           op == IR::Opcode::ReadConstBuffer;
+}
+
+} // Anonymous namespace
+
+void ResourcePatchingPass(IR::Program& program, const ResourceDiscoveryList& resources,
                           const Profile& profile) {
+    Shader::Info& info = program.info;
     // Iterate over discovered resources and patch them after finding the sharp.
     // Pass 1: Track resource sharps
     Descriptors descriptors{info};
@@ -1536,26 +1654,33 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
                 pending.recipe.table_buf_handle = pending.table_buf_inst->Arg(0).U32();
             }
             pending.recipe.valid = true;
-            if (!info.FindBindlessImageRecipe(pending.recipe.image_binding)) {
+            if (!info.FindBindlessImageRecipe(pending.recipe.image_binding) &&
+                info.bindless_image_recipes.size() < Info::MaxBindlessRecipes) {
                 info.bindless_image_recipes.push_back(pending.recipe);
             }
             info.loads.Set(IR::Attribute::WorkgroupId, pending.recipe.workgroup_comp);
         }
     }
 
-    // The rasterizer reads one table per shader (recipe 0). Recipes that disagree on the table
-    // cannot be served by one array, so the shader keeps the existing per-binding path.
+    if (info.bindless_image_recipes.size() > Info::MaxBindlessRecipes) {
+        info.bindless_image_recipes.resize(Info::MaxBindlessRecipes);
+    }
+
+    // Multiple recipes share one sampled-image array via MaxBindlessRecipes partitions.
+    // Only recipes whose PushData::xoffset R source disagrees cannot coexist in one dispatch.
     if (info.bindless_image_recipes.size() > 1) {
-        const auto& first = info.bindless_image_recipes.front();
+        const Info::BindlessImageRecipe* first_mem_r = nullptr;
         for (const auto& r : info.bindless_image_recipes) {
-            if (r.table_is_buffer != first.table_is_buffer ||
-                r.table_buf_handle != first.table_buf_handle ||
-                r.table_ptr_lo_dw != first.table_ptr_lo_dw ||
-                r.table_ptr_hi_dw != first.table_ptr_hi_dw ||
-                r.table_base_dw != first.table_base_dw ||
-                r.table_stride_dw != first.table_stride_dw) {
-                info.bindless_image_recipes.clear();
-                break;
+            if (!r.index_is_value && r.r_from_memory) {
+                if (!first_mem_r) {
+                    first_mem_r = &r;
+                } else if (r.v_ud_lo != first_mem_r->v_ud_lo ||
+                           r.v_ud_hi != first_mem_r->v_ud_hi ||
+                           r.r_offset != first_mem_r->r_offset ||
+                           !std::ranges::equal(r.v_idx, first_mem_r->v_idx)) {
+                    info.bindless_image_recipes.clear();
+                    break;
+                }
             }
         }
     }
@@ -1570,6 +1695,82 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
         } else if (IsDataRingInstruction(inst)) {
             PatchGlobalDataShareAccess(inst, info, descriptors, profile);
         }
+    }
+
+    // Pass 3: Promote live dynamic ReadConst loads (e.g. per-tile / per-layer terrain tables)
+    // to ReadConstBuffer backed by a GPU storage buffer fetching the 40-bit table pointer from flatbuf.
+    u32 promoted_count = 0;
+    for (IR::Block* block : program.post_order_blocks) {
+        for (IR::Inst& inst : *block) {
+            if (inst.GetOpcode() != IR::Opcode::ReadConst) {
+                continue;
+            }
+            if (!HasLiveNonCompositeUse(&inst)) {
+                continue;
+            }
+            std::vector<const IR::Inst*> visited_off;
+            if (inst.Flags<u32>() != 0 &&
+                !ValueDependsOnDynamicIndex(inst.Arg(1), 28, visited_off)) {
+                continue;
+            }
+            IR::Inst* base = inst.Arg(0).TryInst();
+            if (!base || base->GetOpcode() != IR::Opcode::CompositeConstructU32x2 ||
+                base->NumArgs() < 2) {
+                continue;
+            }
+            if (base->Arg(0).IsImmediate() || base->Arg(1).IsImmediate()) {
+                continue;
+            }
+            std::vector<const IR::Inst*> v0;
+            std::vector<const IR::Inst*> v1;
+            if (ValueDependsOnDynamicIndex(base->Arg(0), 24, v0) ||
+                ValueDependsOnDynamicIndex(base->Arg(1), 24, v1)) {
+                continue;
+            }
+            const IR::Inst* lo_inst = base->Arg(0).Inst();
+            const IR::Inst* hi_inst = base->Arg(1).Inst();
+            if (!IsFlatSourceInst(lo_inst) || !IsFlatSourceInst(hi_inst)) {
+                continue;
+            }
+            const SharpLocation lo_loc = SharpLocationFromSource(lo_inst);
+            const SharpLocation hi_loc = SharpLocationFromSource(hi_inst);
+            if (lo_loc == UNKNOWN_LOCATION || hi_loc == UNKNOWN_LOCATION) {
+                continue;
+            }
+
+            SharpFetch<AmdGpu::Buffer> sharp_fetch{};
+            sharp_fetch.offsets = {lo_loc, hi_loc, 0, 0};
+            sharp_fetch.load_mask = 0x3;
+            sharp_fetch.and_masks = {0xFFFFFFFFu, 0x000000FFu, 0u, 0u};
+            sharp_fetch.and_mask_bits = 0x2;
+            sharp_fetch.immediates = {0u, 0u, 262144u, 0u};
+
+            const bool already_exists = std::ranges::any_of(info.buffers, [&](const auto& existing) {
+                return existing.sharp_fetch == sharp_fetch &&
+                       existing.post_op == SharpFetchPostOp::None &&
+                       existing.post_op_dw1_mask == 0 && existing.buffer_type == BufferType::Guest;
+            });
+            if (!already_exists && info.buffers.size() + 4 >= NUM_BUFFERS) {
+                continue;
+            }
+
+            const u32 buf_binding = descriptors.Add(BufferResource{
+                .sharp_fetch = sharp_fetch,
+                .used_types = IR::Type::U32,
+                .buffer_type = BufferType::Guest,
+                .is_written = false,
+                .is_formatted = false,
+            });
+            IR::IREmitter ir{*block, IR::Block::InstructionList::s_iterator_to(inst)};
+            inst.ReplaceUsesWithAndRemove(
+                ir.ReadConstBuffer(ir.Imm32(buf_binding), IR::U32{inst.Arg(1)}, {}));
+            ++promoted_count;
+        }
+    }
+    if (promoted_count > 0) {
+        std::printf("GOW3_DYN_READCONST_PROMOTED: pgm=%#018llx count=%u buffers=%zu\n",
+                    static_cast<unsigned long long>(info.pgm_hash), promoted_count,
+                    info.buffers.size());
     }
 }
 

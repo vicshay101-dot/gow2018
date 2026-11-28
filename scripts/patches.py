@@ -557,6 +557,133 @@ def compile_gow2018_resolution_patches(image, segments, render_res):
     return writes
 
 
+def compile_gow2018_motion_blur_patches(image, segments):
+    """Disable God of War (2018) CUSA07408 Motion Blur by zeroing its global multiplier."""
+    set_found = find_pattern(
+        image, parse_pattern('c5 fa 59 05 ?? ?? ?? ?? 31 c0 c5 fa 11 05 ?? ?? ?? ?? 5d c3'))
+    if len(set_found) != 1:
+        raise LookupError(f'CUSA07408 SetUserMotionBlur match count={len(set_found)}')
+    set_base = set_found[0]
+    set_disp, = struct.unpack_from('<i', image, set_base + 14)
+    data_off = set_base + 18 + set_disp
+    if not any(start <= data_off and data_off + 4 <= end for start, end in segments):
+        raise ValueError(f'CUSA07408 MotionBlur global {data_off:#x} outside PT_LOAD segments')
+    initial, = struct.unpack_from('<f', image, data_off)
+    if initial != 1.0:
+        raise ValueError(f'CUSA07408 MotionBlur global {data_off:#x}: expected 1.0, got {initial}')
+
+    load_found = find_pattern(image, parse_pattern('c5 fa 11 0d ?? ?? ?? ?? c5 da 2a c8'))
+    if len(load_found) != 1:
+        raise LookupError(f'CUSA07408 LoadUserMotionBlur match count={len(load_found)}')
+    load_base = load_found[0]
+    load_disp, = struct.unpack_from('<i', image, load_base + 4)
+    if load_base + 8 + load_disp != data_off:
+        raise ValueError(
+            f'CUSA07408 LoadUserMotionBlur target mismatch: {load_base + 8 + load_disp:#x} != {data_off:#x}')
+
+    nops = b'\x90' * 8
+    return [
+        (data_off, struct.pack('<f', 0.0)),
+        (set_base + 10, nops),
+        (load_base, nops),
+    ]
+
+
+GOW2018_SSAO_INIT_PATTERN = (
+    'c5 f8 10 05 ?? ?? ?? ?? '
+    'c6 05 ?? ?? ?? ?? 01 '
+    'c6 05 ?? ?? ?? ?? 01 '
+    'c6 05 ?? ?? ?? ?? 01 '
+    'c7 05 ?? ?? ?? ?? 00 00 00 00'
+)
+
+
+def _find_unique_gow2018(image, pattern_text, label):
+    found = find_pattern(image, parse_pattern(pattern_text))
+    if len(found) != 1:
+        raise LookupError(f'CUSA07408 {label} match count={len(found)}')
+    return found[0]
+
+
+def _check_segment_range(segments, off, size, label):
+    if not any(start <= off and off + size <= end for start, end in segments):
+        raise ValueError(f'CUSA07408 {label} {off:#x} outside PT_LOAD segments')
+
+
+def compile_gow2018_ssao_patches(image, segments):
+    """Disable God of War (2018) CUSA07408 SSAO+SSR pass using its built-in skip path."""
+    base = _find_unique_gow2018(image, GOW2018_SSAO_INIT_PATTERN, 'SSAO init')
+    disp, = struct.unpack_from('<i', image, base + 10)
+    flag_addr = base + 15 + disp
+    _check_segment_range(segments, base + 14, 1, 'SSAO init flag')
+    if image[base + 14] != 1:
+        raise ValueError(f'CUSA07408 SSAO init flag {base + 14:#x}: expected 1, got {image[base + 14]}')
+
+    s_base = _find_unique_gow2018(
+        image, '20 c1 88 4b 08 80 3d ?? ?? ?? ?? 00 0f 84', 'PassSSAOAndReflections::Setup')
+    s_disp, = struct.unpack_from('<i', image, s_base + 7)
+    if s_base + 12 + s_disp != flag_addr:
+        raise ValueError(
+            f'CUSA07408 SSAO Setup target mismatch: {s_base + 12 + s_disp:#x} != {flag_addr:#x}')
+
+    e_base = _find_unique_gow2018(
+        image, '4c 8b 2e 80 3d ?? ?? ?? ?? 00 0f 84', 'PassSSAOAndReflections::Execute')
+    e_disp, = struct.unpack_from('<i', image, e_base + 5)
+    if e_base + 10 + e_disp != flag_addr:
+        raise ValueError(
+            f'CUSA07408 SSAO Execute target mismatch: {e_base + 10 + e_disp:#x} != {flag_addr:#x}')
+
+    return [(base + 14, b'\x00')]
+
+
+def compile_gow2018_ssr_patches(image, segments):
+    """Disable God of War (2018) CUSA07408 SSR by NOPing the sole write to its strength global."""
+    init_base = _find_unique_gow2018(image, GOW2018_SSAO_INIT_PATTERN, 'SSR init')
+    init_disp, = struct.unpack_from('<i', image, init_base + 31)
+    ssr_addr = init_base + 39 + init_disp
+
+    w_base = _find_unique_gow2018(
+        image, 'c5 d8 58 25 ?? ?? ?? ?? 89 05 ?? ?? ?? ?? 8b 43 50 89 05 ?? ?? ?? ??', 'SSR write')
+    w_disp, = struct.unpack_from('<i', image, w_base + 10)
+    if w_base + 14 + w_disp != ssr_addr:
+        raise ValueError(
+            f'CUSA07408 SSR write target mismatch: {w_base + 14 + w_disp:#x} != {ssr_addr:#x}')
+    _check_segment_range(segments, w_base + 8, 6, 'SSR write')
+
+    return [(w_base + 8, b'\x90' * 6)]
+
+
+def compile_gow2018_bloom_patches(image, segments):
+    """Disable God of War (2018) CUSA07408 Bloom by NOPing the sole write to its strength global."""
+    w_base = _find_unique_gow2018(
+        image,
+        'c5 f8 11 25 ?? ?? ?? ?? '
+        'c5 7a 11 0d ?? ?? ?? ?? '
+        'c7 05 ?? ?? ?? ?? 00 00 00 00 '
+        'c7 05 ?? ?? ?? ?? 00 00 00 00',
+        'Bloom write')
+    w_disp, = struct.unpack_from('<i', image, w_base + 12)
+    bloom_addr = w_base + 16 + w_disp
+    _check_segment_range(segments, w_base + 8, 8, 'Bloom write')
+
+    s_base = _find_unique_gow2018(
+        image, 'c5 f1 ef c9 c5 f9 6e 05 ?? ?? ?? ?? c5 f8 2e c1 75 06 0f 8b', 'CombinedPost::Setup')
+    s_disp, = struct.unpack_from('<i', image, s_base + 8)
+    if s_base + 12 + s_disp != bloom_addr:
+        raise ValueError(
+            f'CUSA07408 Bloom Setup target mismatch: {s_base + 12 + s_disp:#x} != {bloom_addr:#x}')
+
+    e_base = _find_unique_gow2018(
+        image, 'c5 fa 10 05 ?? ?? ?? ?? c5 f1 57 c9 4c 89 7c 24 10 c5 f8 2e c1 75 06 0f 8b',
+        'CombinedPost::Execute')
+    e_disp, = struct.unpack_from('<i', image, e_base + 4)
+    if e_base + 8 + e_disp != bloom_addr:
+        raise ValueError(
+            f'CUSA07408 Bloom Execute target mismatch: {e_base + 8 + e_disp:#x} != {bloom_addr:#x}')
+
+    return [(w_base + 8, b'\x90' * 8)]
+
+
 def write_patches(out, writes):
     # G3PATCH2: the patch base, so the loader can rebase pointers the patches write into
     # relocated slots.
@@ -577,17 +704,33 @@ def main():
     profile=game_profile_for(a.game_dir)
     if not profile:
         writes = []
-        if title == 'CUSA07408' and os.environ.get('GOW3_GOW2018_EBOOT_RES') == '1':
-            res = os.environ.get('GOW3_PATCH_INPUT_RES', '')
+        if title == 'CUSA07408':
             elf_path = a.out / 'eboot.elf'
-            if res and elf_path.is_file():
-                try:
-                    elf = elf_path.read_bytes()
-                    writes = compile_gow2018_resolution_patches(
-                        eboot_image(elf), eboot_segments(elf), res)
-                    print(f'Patches: CUSA07408 native render {res} ({len(writes)} writes)')
-                except (ValueError, LookupError) as error:
-                    print(f'Patches: CUSA07408 resolution skipped ({error})', file=sys.stderr)
+            if elf_path.is_file():
+                elf = elf_path.read_bytes()
+                img = eboot_image(elf)
+                segs = eboot_segments(elf)
+                if os.environ.get('GOW3_GOW2018_EBOOT_RES') == '1':
+                    res = os.environ.get('GOW3_PATCH_INPUT_RES', '')
+                    if res:
+                        try:
+                            writes.extend(compile_gow2018_resolution_patches(img, segs, res))
+                            print(f'Patches: CUSA07408 native render {res} ({len(writes)} writes)')
+                        except (ValueError, LookupError) as error:
+                            print(f'Patches: CUSA07408 resolution skipped ({error})', file=sys.stderr)
+                for env_var, default_disable, label, compiler in (
+                    ('GOW3_GOW2018_DISABLE_MOTION_BLUR', '1', 'motion blur', compile_gow2018_motion_blur_patches),
+                    ('GOW3_GOW2018_DISABLE_SSR', '1', 'SSR', compile_gow2018_ssr_patches),
+                    ('GOW3_GOW2018_DISABLE_SSAO', '0', 'SSAO+SSR', compile_gow2018_ssao_patches),
+                    ('GOW3_GOW2018_DISABLE_BLOOM', '0', 'bloom', compile_gow2018_bloom_patches),
+                ):
+                    if os.environ.get(env_var, default_disable) != '0':
+                        try:
+                            effect_writes = compiler(img, segs)
+                            writes.extend(effect_writes)
+                            print(f'Patches: CUSA07408 {label} disabled ({len(effect_writes)} writes)')
+                        except (ValueError, LookupError) as error:
+                            print(f'Patches: CUSA07408 {label} skipped ({error})', file=sys.stderr)
         write_patches(a.out, writes)
         if not writes:
             print(f'Patches: no patch profile for {title}: none applied')

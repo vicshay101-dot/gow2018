@@ -234,6 +234,9 @@ struct Info : InfoPersistent {
     void AddBindings(Backend::Bindings& bnd) const {
         bnd.buffer += buffers.size();
         bnd.unified += buffers.size() + images.size() + samplers.size();
+        if (!bindless_image_recipes.empty()) {
+            bnd.unified += 1 + (HasBindlessStorageRecipe() ? 1 : 0);
+        }
         bnd.user_data += ud_mask.NumRegs();
     }
 
@@ -255,6 +258,10 @@ struct Info : InfoPersistent {
                reinterpret_cast<TessellationDataConstantBuffer*>(tess_constants_addr),
                sizeof(tess_constants));
     }
+
+    static constexpr u32 BindlessSlotsPerRecipe = 16;
+    static constexpr u32 MaxBindlessRecipes = 8;
+    static constexpr u32 BindlessArraySize = BindlessSlotsPerRecipe * MaxBindlessRecipes; // 128
 
     struct BindlessImageRecipe {
         u32 image_binding{};
@@ -278,7 +285,16 @@ struct Info : InfoPersistent {
         u32 v_idx[4]{};
         bool index_is_value{false}; // slot is a value the shader computes (BindlessImageIndex)
     };
-    boost::container::small_vector<BindlessImageRecipe, 4> bindless_image_recipes;
+    boost::container::small_vector<BindlessImageRecipe, MaxBindlessRecipes> bindless_image_recipes;
+
+    s32 FindBindlessImageRecipeIndex(u32 image_binding) const noexcept {
+        for (size_t i = 0; i < bindless_image_recipes.size(); ++i) {
+            if (bindless_image_recipes[i].image_binding == image_binding) {
+                return static_cast<s32>(i);
+            }
+        }
+        return -1;
+    }
 
     const BindlessImageRecipe* FindBindlessImageRecipe(u32 image_binding) const {
         for (const auto& r : bindless_image_recipes) {
@@ -287,6 +303,15 @@ struct Info : InfoPersistent {
             }
         }
         return nullptr;
+    }
+
+    bool HasBindlessStorageRecipe() const noexcept {
+        for (const auto& r : bindless_image_recipes) {
+            if (r.image_binding < images.size() && images[r.image_binding].is_written) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void Serialize(Serialization::Archive& ar) const;

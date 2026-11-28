@@ -147,6 +147,7 @@ inline std::vector<std::uint32_t> Compile(std::span<const std::uint32_t> program
             load(6, count - 1);      // addr lo
             emit(0xd3607ca5u);       // lsl x5, x5, #32
             emit(0xaa0600a5u);       // orr x5, x5, x6
+            emit(0xd340bca5u);       // ubfx x5, x5, #0, #48 (mask V# stride/swizzle bits)
             emit(0x0b040084u);       // add w4, w4, w4
             emit(0x0b040084u);       // add w4, w4, w4 (off_dw * 4)
             emit(0x52800003u);       // mov w3, #0

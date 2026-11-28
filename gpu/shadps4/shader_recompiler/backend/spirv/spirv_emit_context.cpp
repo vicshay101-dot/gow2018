@@ -1069,7 +1069,7 @@ void EmitContext::DefineImagesAndSamplers() {
             }
         }
         if (Sirit::ValidId(bindless_image_type)) {
-            const Id array_type = TypeArray(bindless_image_type, ConstU32(64u));
+            const Id array_type = TypeArray(bindless_image_type, ConstU32(Info::BindlessArraySize));
             const Id pointer_type = TypePointer(spv::StorageClass::UniformConstant, array_type);
             bindless_images_id = AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant);
             Decorate(bindless_images_id, spv::Decoration::Binding, binding.unified++);
@@ -1080,20 +1080,24 @@ void EmitContext::DefineImagesAndSamplers() {
             // The rasterizer always writes the sampled slot when recipes exist; keep numbering aligned.
             binding.unified++;
         }
-        for (const auto& recipe : info.bindless_image_recipes) {
-            if (recipe.image_binding < images.size() && images[recipe.image_binding].is_storage) {
-                bindless_storage_type = images[recipe.image_binding].image_type;
-                break;
+        if (info.HasBindlessStorageRecipe()) {
+            for (const auto& recipe : info.bindless_image_recipes) {
+                if (recipe.image_binding < images.size() && images[recipe.image_binding].is_storage) {
+                    bindless_storage_type = images[recipe.image_binding].image_type;
+                    break;
+                }
             }
-        }
-        if (Sirit::ValidId(bindless_storage_type)) {
-            const Id array_type = TypeArray(bindless_storage_type, ConstU32(64u));
-            const Id pointer_type = TypePointer(spv::StorageClass::UniformConstant, array_type);
-            bindless_storage_id = AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant);
-            Decorate(bindless_storage_id, spv::Decoration::Binding, binding.unified++);
-            Decorate(bindless_storage_id, spv::Decoration::DescriptorSet, 0U);
-            Name(bindless_storage_id, fmt::format("{}_bindless_store", hw_stage));
-            interfaces.push_back(bindless_storage_id);
+            if (Sirit::ValidId(bindless_storage_type)) {
+                const Id array_type = TypeArray(bindless_storage_type, ConstU32(64u));
+                const Id pointer_type = TypePointer(spv::StorageClass::UniformConstant, array_type);
+                bindless_storage_id = AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant);
+                Decorate(bindless_storage_id, spv::Decoration::Binding, binding.unified++);
+                Decorate(bindless_storage_id, spv::Decoration::DescriptorSet, 0U);
+                Name(bindless_storage_id, fmt::format("{}_bindless_store", hw_stage));
+                interfaces.push_back(bindless_storage_id);
+            } else {
+                binding.unified++;
+            }
         }
     }
 }

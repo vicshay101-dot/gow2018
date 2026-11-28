@@ -32,9 +32,9 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 27u; // gow3: SHARP_INDEX_VALUE log + MaxHotPages=2048
-static constexpr u32 ShaderMetaVersion = 27u; // gow3: SHARP_INDEX_VALUE log + MaxHotPages=2048
-static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
+static constexpr u32 ShaderBinaryVersion = 29u; // gow3: dynamic ReadConstBuffer + multi-recipe bindless + push desc
+static constexpr u32 ShaderMetaVersion = 29u; // gow3: dynamic ReadConstBuffer + multi-recipe bindless + push desc
+static constexpr u32 PipelineKeyVersion = 6u; // gow3: per-stage bindless array layout + conditional storage
 } // namespace Serialization
 
 namespace Vulkan {
@@ -790,14 +790,25 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
             auto pipeline = std::make_unique<GraphicsPipeline>(
                 instance, scheduler, desc_heap, profile, key, *pipeline_cache, infos,
                 runtime_infos, fetch, modules, sdata, true);
+            if (!pipeline->Handle()) {
+                return false;
+            }
             std::scoped_lock lock{warmup_results_mutex};
             warmup_graphics.emplace_back(key, std::move(pipeline));
             return true;
         });
     } else {
-        it.value() = std::make_unique<GraphicsPipeline>(
+        auto pipeline = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
             sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, true);
+        if (!pipeline->Handle()) {
+            graphics_pipelines.erase(it);
+            sel.infos.fill(nullptr);
+            sel.modules.fill(nullptr);
+            sel.fetch_shader.reset();
+            return false;
+        }
+        it.value() = std::move(pipeline);
     }
 
     sel.infos.fill(nullptr);
@@ -1284,6 +1295,9 @@ void PipelineCache::PumpWarmUp() {
                 built.graphics = std::make_unique<GraphicsPipeline>(
                     instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
                     no_runtime_infos, fetch, modules, sdata, true);
+                if (!built.graphics->Handle()) {
+                    return false;
+                }
             }
             warm.built.Push(std::move(built));
             return true;

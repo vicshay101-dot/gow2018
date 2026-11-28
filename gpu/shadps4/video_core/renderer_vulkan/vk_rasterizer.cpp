@@ -1800,6 +1800,9 @@ bool Rasterizer::HelperEligible(const Pipeline* pipeline) const {
         if (!stage) {
             continue;
         }
+        if (!stage->bindless_image_recipes.empty()) {
+            return false;
+        }
         // Mip arrays make the descriptor layout depend on the T#s.
         for (const auto& image : stage->images) {
             if (image.mip_fallback_mode != Shader::MipStorageFallbackMode::None) {
@@ -1926,12 +1929,11 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     push_data = MakeUserData(Regs());
     if (!HelperEligible(pipeline)) {
         ++helper_serial;
-        const Shader::Info* cs_stage = nullptr;
+        u32 stage_slot = 0;
         for (const auto* stage : pipeline->GetStages()) {
             if (!stage) {
                 continue;
             }
-            cs_stage = stage;
             set_writes.resize(set_writes.size() + stage->buffers.size() + stage->images.size() +
                               stage->samplers.size());
             stage->PushUd(binding, push_data);
@@ -1939,197 +1941,242 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
             BindBuffers(*stage, prepared, binding, push_data, set_write_index);
             BindTextures(*stage, prepared, binding, set_write_index, needs_barrier);
             uses_dma |= stage->uses_dma;
-        }
-        if (pipeline->IsCompute() && instance.IsBindlessImagesSupported() && cs_stage &&
-            !cs_stage->bindless_image_recipes.empty()) {
-            const auto& recipe = cs_stage->bindless_image_recipes[0];
-            const auto& target_image_desc = cs_stage->images[recipe.image_binding];
-            VAddr table_base_addr = 0;
-            if (recipe.table_is_buffer) {
-                const auto buf = cs_stage->buffers[recipe.table_buf_handle].GetSharp(*cs_stage);
-                table_base_addr = buf.base_address;
-            } else {
-                const u32 lo = cs_stage->ReadUdSharp<u32>(recipe.table_ptr_lo_dw);
-                const u32 hi = cs_stage->ReadUdSharp<u32>(recipe.table_ptr_hi_dw);
-                table_base_addr =
-                    (static_cast<u64>(lo) | (static_cast<u64>(hi) << 32)) & 0xFFFFFFFFFFFFULL;
-            }
-            if (recipe.r_from_memory) {
-                // R = dword r_offset of the buffer whose V# sits in memory at the user-data pointer.
-                // Constant for the whole dispatch: only WorkgroupId varies, and the shader adds it.
-                const u32 v_lo = cs_stage->ReadUdSharp<u32>(recipe.v_ud_lo);
-                const u32 v_hi = cs_stage->ReadUdSharp<u32>(recipe.v_ud_hi);
-                const VAddr v_ptr =
-                    (static_cast<u64>(v_lo) | (static_cast<u64>(v_hi) << 32)) & 0xFFFFFFFFFFFFULL;
-                u32 r_value = 0;
-                bool r_ok = v_ptr != 0;
-                u32 vdw[4]{};
-                for (u32 k = 0; k < 4 && r_ok; ++k) {
-                    const VAddr a = v_ptr + static_cast<u64>(recipe.v_idx[k]) * 4ULL;
-                    if (!memory->IsValidGpuMapping(a, sizeof(u32))) {
-                        r_ok = false;
-                        break;
+
+            if (instance.IsBindlessImagesSupported() && !stage->bindless_image_recipes.empty()) {
+                auto& stage_bindless_imgs = bindless_image_infos[stage_slot];
+                const u32 num_recipes = static_cast<u32>(std::min<size_t>(
+                    stage->bindless_image_recipes.size(), Shader::Info::MaxBindlessRecipes));
+                vk::DescriptorImageInfo first_fallback{};
+                bool has_first_fallback = false;
+                bool wrote_xoffset = false;
+
+                for (u32 r_idx = 0; r_idx < num_recipes; ++r_idx) {
+                    const auto& recipe = stage->bindless_image_recipes[r_idx];
+                    const auto& target_image_desc = stage->images[recipe.image_binding];
+                    VAddr table_base_addr = 0;
+                    if (recipe.table_is_buffer) {
+                        const auto buf =
+                            stage->buffers[recipe.table_buf_handle].GetSharp(*stage);
+                        table_base_addr = buf.base_address;
+                    } else {
+                        const u32 lo = stage->ReadUdSharp<u32>(recipe.table_ptr_lo_dw);
+                        const u32 hi = stage->ReadUdSharp<u32>(recipe.table_ptr_hi_dw);
+                        table_base_addr =
+                            (static_cast<u64>(lo) | (static_cast<u64>(hi) << 32)) &
+                            0xFFFFFFFFFFFFULL;
                     }
-                    std::memcpy(&vdw[k], reinterpret_cast<const void*>(a), sizeof(u32));
-                }
-                if (r_ok) {
-                    const VAddr buf_base =
-                        static_cast<u64>(vdw[0]) | (static_cast<u64>(vdw[1] & 0xFFFFu) << 32);
-                    const VAddr r_addr = buf_base + static_cast<u64>(recipe.r_offset) * 4ULL;
-                    if (memory->IsValidGpuMapping(r_addr, sizeof(u32))) {
-                        std::memcpy(&r_value, reinterpret_cast<const void*>(r_addr), sizeof(u32));
-                    }
-                }
-                float r_bits{};
-                std::memcpy(&r_bits, &r_value, sizeof(float));
-                push_data.xoffset = r_bits;
-            }
-            // Resolves one T# to a view the array can hold. The same path serves the table entries
-            // and the fallback, so an unfilled slot never holds a null descriptor (that needs the
-            // nullDescriptor feature, which is not requested).
-            const auto resolve_view = [&](const AmdGpu::Image& tsharp,
-                                          vk::DescriptorImageInfo& out) -> bool {
-                VideoCore::TextureCache::ImageDesc desc{tsharp, target_image_desc};
-                VideoCore::ImageId image_id = texture_cache.FindImage(desc);
-                if (!image_id) {
-                    return false;
-                }
-                bound_images.emplace_back(image_id);
-                auto* image = &texture_cache.GetImage(image_id);
-                if (auto depth_image_id = texture_cache.GetAssociatedDepth(*image)) {
-                    image_id = depth_image_id;
-                    image = &texture_cache.GetImage(image_id);
-                }
-                auto& image_view = texture_cache.FindTexture(image_id, desc, nullptr, true);
-                const auto new_layout = image->info.props.is_depth
-                                            ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
-                                            : vk::ImageLayout::eShaderReadOnlyOptimal;
-                needs_barrier |= runtime.Transit(
-                    image, new_layout, vk::PipelineStageFlagBits2::eAllCommands,
-                    vk::AccessFlagBits2::eShaderRead, desc.view_info.range);
-                image->usage.texture = 1u;
-                out = vk::DescriptorImageInfo{
-                    .sampler = VK_NULL_HANDLE,
-                    .imageView = *image_view.image_view,
-                    .imageLayout = image->backing->state.layout,
-                };
-                return true;
-            };
-            // Fallback: the image the shader used before the array existed, from its own T#.
-            vk::DescriptorImageInfo fallback{};
-            const bool has_fallback =
-                resolve_view(target_image_desc.GetSharp(*cs_stage), fallback);
-            for (u32 k = 0; k < 64u; ++k) {
-                vk::DescriptorImageInfo entry{};
-                bool filled = false;
-                if (table_base_addr != 0) {
-                    const VAddr tsharp_addr =
-                        table_base_addr +
-                        (static_cast<u64>(recipe.table_base_dw) +
-                         static_cast<u64>(k) * static_cast<u64>(recipe.table_stride_dw)) *
-                            4ULL;
-                    if (memory->IsValidGpuMapping(tsharp_addr, sizeof(AmdGpu::Image))) {
-                        AmdGpu::Image tsharp{};
-                        std::memcpy(&tsharp, reinterpret_cast<const void*>(tsharp_addr),
-                                    sizeof(AmdGpu::Image));
-                        const auto data_fmt = tsharp.GetDataFmt();
-                        const auto num_fmt = tsharp.GetNumberFmt();
-                        if (tsharp.Address() != 0 && data_fmt != AmdGpu::DataFormat::FormatInvalid &&
-                            memory->IsValidGpuMapping(tsharp.Address(), 0) &&
-                            IsKnownFormat(data_fmt, num_fmt)) {
-                            filled = resolve_view(tsharp, entry);
+                    if (!wrote_xoffset && pipeline->IsCompute() && recipe.r_from_memory &&
+                        !recipe.index_is_value) {
+                        // R = dword r_offset of the buffer whose V# sits in memory at the
+                        // user-data pointer. Constant for the whole dispatch: only WorkgroupId
+                        // varies, and the shader adds it.
+                        const u32 v_lo = stage->ReadUdSharp<u32>(recipe.v_ud_lo);
+                        const u32 v_hi = stage->ReadUdSharp<u32>(recipe.v_ud_hi);
+                        const VAddr v_ptr =
+                            (static_cast<u64>(v_lo) | (static_cast<u64>(v_hi) << 32)) &
+                            0xFFFFFFFFFFFFULL;
+                        u32 r_value = 0;
+                        bool r_ok = v_ptr != 0;
+                        u32 vdw[4]{};
+                        for (u32 k = 0; k < 4 && r_ok; ++k) {
+                            const VAddr a = v_ptr + static_cast<u64>(recipe.v_idx[k]) * 4ULL;
+                            if (!memory->IsValidGpuMapping(a, sizeof(u32))) {
+                                r_ok = false;
+                                break;
+                            }
+                            std::memcpy(&vdw[k], reinterpret_cast<const void*>(a), sizeof(u32));
                         }
-                    }
-                }
-                bindless_image_infos[k] = (!filled && has_fallback) ? fallback : entry;
-            }
-            set_writes.push_back(vk::WriteDescriptorSet{
-                .dstSet = VK_NULL_HANDLE,
-                .dstBinding = binding.unified,
-                .dstArrayElement = 0,
-                .descriptorCount = 64,
-                .descriptorType = vk::DescriptorType::eSampledImage,
-                .pImageInfo = bindless_image_infos.data(),
-            });
-            ++set_write_index;
-            binding.unified += 1;
-            // Storage array: the images the shader writes, same table and same index (one table per
-            // shader, enforced in the resource pass). Descriptors use the general layout.
-            const Shader::Info::BindlessImageRecipe* st_recipe = nullptr;
-            for (const auto& r : cs_stage->bindless_image_recipes) {
-                if (r.image_binding < cs_stage->images.size() &&
-                    cs_stage->images[r.image_binding].is_written) {
-                    st_recipe = &r;
-                    break;
-                }
-            }
-            if (st_recipe) {
-                const auto& storage_target = cs_stage->images[st_recipe->image_binding];
-                const auto resolve_storage = [&](const AmdGpu::Image& tsharp,
-                                                 vk::DescriptorImageInfo& out) -> bool {
-                    VideoCore::TextureCache::ImageDesc desc{tsharp, storage_target};
-                    VideoCore::ImageId image_id = texture_cache.FindImage(desc);
-                    if (!image_id) {
-                        return false;
-                    }
-                    bound_images.emplace_back(image_id);
-                    auto* image = &texture_cache.GetImage(image_id);
-                    if (auto depth_image_id = texture_cache.GetAssociatedDepth(*image)) {
-                        image_id = depth_image_id;
-                        image = &texture_cache.GetImage(image_id);
-                    }
-                    auto& image_view = texture_cache.FindTexture(image_id, desc, nullptr, true);
-                    needs_barrier |= runtime.Transit(
-                        image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
-                        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
-                        desc.view_info.range);
-                    out = vk::DescriptorImageInfo{
-                        .sampler = VK_NULL_HANDLE,
-                        .imageView = *image_view.image_view,
-                        .imageLayout = vk::ImageLayout::eGeneral,
-                    };
-                    return true;
-                };
-                vk::DescriptorImageInfo storage_fallback{};
-                const bool has_storage_fallback =
-                    resolve_storage(storage_target.GetSharp(*cs_stage), storage_fallback);
-                for (u32 k = 0; k < 64u; ++k) {
-                    vk::DescriptorImageInfo entry{};
-                    bool filled = false;
-                    if (table_base_addr != 0) {
-                        const VAddr tsharp_addr =
-                            table_base_addr +
-                            (static_cast<u64>(recipe.table_base_dw) +
-                             static_cast<u64>(k) * static_cast<u64>(recipe.table_stride_dw)) *
-                                4ULL;
-                        if (memory->IsValidGpuMapping(tsharp_addr, sizeof(AmdGpu::Image))) {
-                            AmdGpu::Image tsharp{};
-                            std::memcpy(&tsharp, reinterpret_cast<const void*>(tsharp_addr),
-                                        sizeof(AmdGpu::Image));
-                            const auto data_fmt = tsharp.GetDataFmt();
-                            const auto num_fmt = tsharp.GetNumberFmt();
-                            if (tsharp.Address() != 0 &&
-                                data_fmt != AmdGpu::DataFormat::FormatInvalid &&
-                                memory->IsValidGpuMapping(tsharp.Address(), 0) &&
-                                IsKnownFormat(data_fmt, num_fmt)) {
-                                filled = resolve_storage(tsharp, entry);
+                        if (r_ok) {
+                            const VAddr buf_base =
+                                static_cast<u64>(vdw[0]) |
+                                (static_cast<u64>(vdw[1] & 0xFFFFu) << 32);
+                            const VAddr r_addr =
+                                buf_base + static_cast<u64>(recipe.r_offset) * 4ULL;
+                            if (memory->IsValidGpuMapping(r_addr, sizeof(u32))) {
+                                std::memcpy(&r_value, reinterpret_cast<const void*>(r_addr),
+                                            sizeof(u32));
                             }
                         }
+                        float r_bits{};
+                        std::memcpy(&r_bits, &r_value, sizeof(float));
+                        push_data.xoffset = r_bits;
+                        wrote_xoffset = true;
                     }
-                    bindless_storage_infos[k] =
-                        (!filled && has_storage_fallback) ? storage_fallback : entry;
+                    // Resolves one T# to a view the array can hold. The same path serves the table
+                    // entries and the fallback, so an unfilled slot never holds a null descriptor.
+                    const auto resolve_view = [&](const AmdGpu::Image& tsharp,
+                                                  vk::DescriptorImageInfo& out) -> bool {
+                        VideoCore::TextureCache::ImageDesc desc{tsharp, target_image_desc};
+                        VideoCore::ImageId image_id = texture_cache.FindImage(desc);
+                        if (!image_id) {
+                            return false;
+                        }
+                        if (bound_images.size() < bound_images.capacity()) {
+                            bound_images.emplace_back(image_id);
+                        }
+                        auto* image = &texture_cache.GetImage(image_id);
+                        if (auto depth_image_id = texture_cache.GetAssociatedDepth(*image)) {
+                            image_id = depth_image_id;
+                            image = &texture_cache.GetImage(image_id);
+                        }
+                        auto& image_view = texture_cache.FindTexture(image_id, desc, nullptr, true);
+                        const auto new_layout = image->info.props.is_depth
+                                                    ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
+                                                    : vk::ImageLayout::eShaderReadOnlyOptimal;
+                        needs_barrier |= runtime.Transit(
+                            image, new_layout, vk::PipelineStageFlagBits2::eAllCommands,
+                            vk::AccessFlagBits2::eShaderRead, desc.view_info.range);
+                        image->usage.texture = 1u;
+                        out = vk::DescriptorImageInfo{
+                            .sampler = VK_NULL_HANDLE,
+                            .imageView = *image_view.image_view,
+                            .imageLayout = image->backing->state.layout,
+                        };
+                        return true;
+                    };
+                    vk::DescriptorImageInfo fallback{};
+                    const bool has_fallback =
+                        resolve_view(target_image_desc.GetSharp(*stage), fallback);
+                    if (r_idx == 0) {
+                        first_fallback = fallback;
+                        has_first_fallback = has_fallback;
+                    }
+                    const u32 slice_base = r_idx * Shader::Info::BindlessSlotsPerRecipe;
+                    for (u32 k = 0; k < Shader::Info::BindlessSlotsPerRecipe; ++k) {
+                        vk::DescriptorImageInfo entry{};
+                        bool filled = false;
+                        if (table_base_addr != 0) {
+                            const VAddr tsharp_addr =
+                                table_base_addr +
+                                (static_cast<u64>(recipe.table_base_dw) +
+                                 static_cast<u64>(k) * static_cast<u64>(recipe.table_stride_dw)) *
+                                    4ULL;
+                            if (memory->IsValidGpuMapping(tsharp_addr, sizeof(AmdGpu::Image))) {
+                                AmdGpu::Image tsharp{};
+                                std::memcpy(&tsharp, reinterpret_cast<const void*>(tsharp_addr),
+                                            sizeof(AmdGpu::Image));
+                                const auto data_fmt = tsharp.GetDataFmt();
+                                const auto num_fmt = tsharp.GetNumberFmt();
+                                if (tsharp.Address() != 0 &&
+                                    data_fmt != AmdGpu::DataFormat::FormatInvalid &&
+                                    memory->IsValidGpuMapping(tsharp.Address(), 0) &&
+                                    IsKnownFormat(data_fmt, num_fmt)) {
+                                    filled = resolve_view(tsharp, entry);
+                                }
+                            }
+                        }
+                        stage_bindless_imgs[slice_base + k] =
+                            (!filled && has_fallback) ? fallback : entry;
+                    }
+                }
+                for (u32 slot = num_recipes * Shader::Info::BindlessSlotsPerRecipe;
+                     slot < Shader::Info::BindlessArraySize; ++slot) {
+                    stage_bindless_imgs[slot] =
+                        has_first_fallback ? first_fallback : vk::DescriptorImageInfo{};
                 }
                 set_writes.push_back(vk::WriteDescriptorSet{
                     .dstSet = VK_NULL_HANDLE,
-                    .dstBinding = binding.unified,
+                    .dstBinding = binding.unified++,
                     .dstArrayElement = 0,
-                    .descriptorCount = 64,
-                    .descriptorType = vk::DescriptorType::eStorageImage,
-                    .pImageInfo = bindless_storage_infos.data(),
+                    .descriptorCount = Shader::Info::BindlessArraySize,
+                    .descriptorType = vk::DescriptorType::eSampledImage,
+                    .pImageInfo = stage_bindless_imgs.data(),
                 });
                 ++set_write_index;
+
+                // Storage array: the images the shader writes, one table per shader.
+                const Shader::Info::BindlessImageRecipe* st_recipe = nullptr;
+                for (const auto& r : stage->bindless_image_recipes) {
+                    if (r.image_binding < stage->images.size() &&
+                        stage->images[r.image_binding].is_written) {
+                        st_recipe = &r;
+                        break;
+                    }
+                }
+                if (st_recipe) {
+                    VAddr st_table_base_addr = 0;
+                    if (st_recipe->table_is_buffer) {
+                        const auto buf =
+                            stage->buffers[st_recipe->table_buf_handle].GetSharp(*stage);
+                        st_table_base_addr = buf.base_address;
+                    } else {
+                        const u32 lo = stage->ReadUdSharp<u32>(st_recipe->table_ptr_lo_dw);
+                        const u32 hi = stage->ReadUdSharp<u32>(st_recipe->table_ptr_hi_dw);
+                        st_table_base_addr =
+                            (static_cast<u64>(lo) | (static_cast<u64>(hi) << 32)) &
+                            0xFFFFFFFFFFFFULL;
+                    }
+                    auto& stage_bindless_store = bindless_storage_infos[stage_slot];
+                    const auto& storage_target = stage->images[st_recipe->image_binding];
+                    const auto resolve_storage = [&](const AmdGpu::Image& tsharp,
+                                                     vk::DescriptorImageInfo& out) -> bool {
+                        VideoCore::TextureCache::ImageDesc desc{tsharp, storage_target};
+                        VideoCore::ImageId image_id = texture_cache.FindImage(desc);
+                        if (!image_id) {
+                            return false;
+                        }
+                        if (bound_images.size() < bound_images.capacity()) {
+                            bound_images.emplace_back(image_id);
+                        }
+                        auto* image = &texture_cache.GetImage(image_id);
+                        if (auto depth_image_id = texture_cache.GetAssociatedDepth(*image)) {
+                            image_id = depth_image_id;
+                            image = &texture_cache.GetImage(image_id);
+                        }
+                        auto& image_view = texture_cache.FindTexture(image_id, desc, nullptr, true);
+                        needs_barrier |= runtime.Transit(
+                            image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
+                            vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
+                            desc.view_info.range);
+                        out = vk::DescriptorImageInfo{
+                            .sampler = VK_NULL_HANDLE,
+                            .imageView = *image_view.image_view,
+                            .imageLayout = vk::ImageLayout::eGeneral,
+                        };
+                        return true;
+                    };
+                    vk::DescriptorImageInfo storage_fallback{};
+                    const bool has_storage_fallback =
+                        resolve_storage(storage_target.GetSharp(*stage), storage_fallback);
+                    for (u32 k = 0; k < 64u; ++k) {
+                        vk::DescriptorImageInfo entry{};
+                        bool filled = false;
+                        if (st_table_base_addr != 0) {
+                            const VAddr tsharp_addr =
+                                st_table_base_addr +
+                                (static_cast<u64>(st_recipe->table_base_dw) +
+                                 static_cast<u64>(k) *
+                                     static_cast<u64>(st_recipe->table_stride_dw)) *
+                                    4ULL;
+                            if (memory->IsValidGpuMapping(tsharp_addr, sizeof(AmdGpu::Image))) {
+                                AmdGpu::Image tsharp{};
+                                std::memcpy(&tsharp, reinterpret_cast<const void*>(tsharp_addr),
+                                            sizeof(AmdGpu::Image));
+                                const auto data_fmt = tsharp.GetDataFmt();
+                                const auto num_fmt = tsharp.GetNumberFmt();
+                                if (tsharp.Address() != 0 &&
+                                    data_fmt != AmdGpu::DataFormat::FormatInvalid &&
+                                    memory->IsValidGpuMapping(tsharp.Address(), 0) &&
+                                    IsKnownFormat(data_fmt, num_fmt)) {
+                                    filled = resolve_storage(tsharp, entry);
+                                }
+                            }
+                        }
+                        stage_bindless_store[k] =
+                            (!filled && has_storage_fallback) ? storage_fallback : entry;
+                    }
+                    set_writes.push_back(vk::WriteDescriptorSet{
+                        .dstSet = VK_NULL_HANDLE,
+                        .dstBinding = binding.unified++,
+                        .dstArrayElement = 0,
+                        .descriptorCount = 64,
+                        .descriptorType = vk::DescriptorType::eStorageImage,
+                        .pImageInfo = stage_bindless_store.data(),
+                    });
+                    ++set_write_index;
+                }
             }
-            binding.unified += 1;
+            ++stage_slot;
         }
     } else {
         // gow3: textures on the helper, buffers here. Without mip arrays every stage's
@@ -3703,11 +3750,11 @@ u32 Rasterizer::ReadDataFromGds(u32 gds_offset) {
 }
 
 bool Rasterizer::InvalidateMemory(VAddr addr, u64 size, bool assume_locks) {
-    DrainDrawPipe();
     if (!IsMapped(addr, size)) {
         // Not GPU mapped memory, can skip invalidation logic entirely.
         return false;
     }
+    DrainDrawPipe();
     texture_cache.ResolveReadbacks(addr, size, assume_locks, VideoCore::ReadbackSource::CpuWrite);
     buffer_cache.InvalidateMemory(addr, size, assume_locks);
     texture_cache.InvalidateMemory(addr, size);
@@ -3715,6 +3762,9 @@ bool Rasterizer::InvalidateMemory(VAddr addr, u64 size, bool assume_locks) {
 }
 
 bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks) {
+    if (!IsMapped(addr, 8)) {
+        return false;
+    }
     DrainDrawPipe();
     if (!InvalidateMemory(addr, 8, assume_locks)) {
         return false;
@@ -3724,11 +3774,11 @@ bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks) {
 }
 
 bool Rasterizer::ReadMemory(VAddr addr, u64 size, bool assume_locks) {
-    DrainDrawPipe();
     if (!IsMapped(addr, size)) {
         // Not GPU mapped memory, can skip invalidation logic entirely.
         return false;
     }
+    DrainDrawPipe();
     const bool image_readback =
         texture_cache.ResolveReadbacks(addr, size, assume_locks, VideoCore::ReadbackSource::CpuRead);
     if (!image_readback || buffer_cache.IsRegionGpuModified(addr, size)) {

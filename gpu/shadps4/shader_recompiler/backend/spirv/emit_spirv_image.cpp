@@ -22,7 +22,8 @@ static Id EmitBindlessRValue(EmitContext& ctx) {
 }
 
 // Index of the bindless array for one access: the chain from the IR, computed in the shader.
-static Id ComputeBindlessIndex(EmitContext& ctx, const Info::BindlessImageRecipe& recipe) {
+static Id ComputeBindlessIndex(EmitContext& ctx, const Info::BindlessImageRecipe& recipe,
+                                 u32 recipe_idx, bool is_storage) {
     static std::mutex log_mutex;
     static std::unordered_set<u64> logged_pgms;
     {
@@ -42,15 +43,23 @@ static Id ComputeBindlessIndex(EmitContext& ctx, const Info::BindlessImageRecipe
     const Id add2 = ctx.OpIAdd(ctx.U32[1], mul1, ctx.ConstU32(recipe.c2));
     const Id mul2 = ctx.OpIMul(ctx.U32[1], add2, ctx.ConstU32(recipe.m2));
     const Id index_id = ctx.OpShiftRightLogical(ctx.U32[1], mul2, ctx.ConstU32(recipe.s));
-    ctx.Decorate(index_id, spv::Decoration::NonUniform);
-    return index_id;
+    const Id local_slot =
+        ctx.OpBitwiseAnd(ctx.U32[1], index_id, ctx.ConstU32(Info::BindlessSlotsPerRecipe - 1));
+    const u32 base_slot = is_storage ? 0u : recipe_idx * Info::BindlessSlotsPerRecipe;
+    const Id slot =
+        base_slot > 0 ? ctx.OpIAdd(ctx.U32[1], local_slot, ctx.ConstU32(base_slot)) : local_slot;
+    ctx.Decorate(slot, spv::Decoration::NonUniform);
+    return slot;
 }
 
 // Slot of the bindless array for one access: from the chain (recipe) or from the shader's own value.
 // Invalid when the value form has no BindlessImageIndex in front of this access.
-static Id BindlessSlot(EmitContext& ctx, const Info::BindlessImageRecipe& recipe, u32 image_idx) {
+static Id BindlessSlot(EmitContext& ctx, const Info::BindlessImageRecipe& recipe, u32 image_idx,
+                       bool is_storage) {
     if (!recipe.index_is_value) {
-        return ComputeBindlessIndex(ctx, recipe);
+        const s32 found = ctx.info.FindBindlessImageRecipeIndex(image_idx);
+        const u32 recipe_idx = found >= 0 ? static_cast<u32>(found) : 0u;
+        return ComputeBindlessIndex(ctx, recipe, recipe_idx, is_storage);
     }
     const auto it = ctx.bindless_index_by_image.find(image_idx);
     if (it == ctx.bindless_index_by_image.end()) {
@@ -70,12 +79,23 @@ static Id BindlessSlot(EmitContext& ctx, const Info::BindlessImageRecipe& recipe
 }
 
 void EmitBindlessImageIndex(EmitContext& ctx, u32 image_binding, Id index) {
-    if (!Sirit::ValidId(ctx.bindless_images_id)) {
+    if (!Sirit::ValidId(ctx.bindless_images_id) && !Sirit::ValidId(ctx.bindless_storage_id)) {
         return;
     }
-    // A fresh Id per access, clamped to the array size, so the NonUniform decoration is not
+    const s32 recipe_idx = ctx.info.FindBindlessImageRecipeIndex(image_binding);
+    if (recipe_idx < 0) {
+        return;
+    }
+    const bool is_storage =
+        image_binding < ctx.images.size() && ctx.images[image_binding].is_storage;
+    // A fresh Id per access, clamped to the partition size, so the NonUniform decoration is not
     // repeated on a value shared by several accesses and a bad slot cannot leave the array.
-    const Id slot = ctx.OpBitwiseAnd(ctx.U32[1], index, ctx.ConstU32(63u));
+    const Id local_slot =
+        ctx.OpBitwiseAnd(ctx.U32[1], index, ctx.ConstU32(Info::BindlessSlotsPerRecipe - 1));
+    const u32 base_slot =
+        is_storage ? 0u : static_cast<u32>(recipe_idx) * Info::BindlessSlotsPerRecipe;
+    const Id slot =
+        base_slot > 0 ? ctx.OpIAdd(ctx.U32[1], local_slot, ctx.ConstU32(base_slot)) : local_slot;
     ctx.Decorate(slot, spv::Decoration::NonUniform);
     ctx.bindless_index_by_image[image_binding] = slot;
 }
@@ -86,7 +106,7 @@ static Id LoadImage(EmitContext& ctx, u32 handle) {
     if (!texture.is_storage && Sirit::ValidId(ctx.bindless_images_id) &&
         texture.image_type.value == ctx.bindless_image_type.value) {
         if (const auto* recipe = ctx.info.FindBindlessImageRecipe(image_idx)) {
-            const Id index_id = BindlessSlot(ctx, *recipe, image_idx);
+            const Id index_id = BindlessSlot(ctx, *recipe, image_idx, false);
             if (Sirit::ValidId(index_id)) {
                 const Id ptr_type =
                     ctx.TypePointer(spv::StorageClass::UniformConstant, texture.image_type);
@@ -109,11 +129,17 @@ static Id StorageBindlessPtr(EmitContext& ctx, u32 handle, bool lod_fallback) {
         texture.image_type.value != ctx.bindless_storage_type.value) {
         return {};
     }
-    const auto* recipe = ctx.info.FindBindlessImageRecipe(image_idx);
-    if (!recipe) {
+    const Info::BindlessImageRecipe* st_recipe = nullptr;
+    for (const auto& r : ctx.info.bindless_image_recipes) {
+        if (r.image_binding < ctx.images.size() && ctx.images[r.image_binding].is_storage) {
+            st_recipe = &r;
+            break;
+        }
+    }
+    if (!st_recipe || st_recipe->image_binding != image_idx) {
         return {};
     }
-    const Id index_id = BindlessSlot(ctx, *recipe, image_idx);
+    const Id index_id = BindlessSlot(ctx, *st_recipe, image_idx, true);
     if (!Sirit::ValidId(index_id)) {
         return {};
     }

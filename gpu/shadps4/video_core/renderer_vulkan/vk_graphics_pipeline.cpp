@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <utility>
 #include <boost/container/small_vector.hpp>
 
@@ -433,8 +434,13 @@ GraphicsPipeline::GraphicsPipeline(
     auto [pipeline_result, pipe] =
         CreateCachedGraphicsPipeline(device, pipeline_cache, pipeline_info, key,
                                      instance.GetPipelineBinaryGlobalKey(), binary_directory);
-    ASSERT_MSG(pipeline_result == vk::Result::eSuccess, "Failed to create graphics pipeline: {}",
-               vk::to_string(pipeline_result));
+    if (pipeline_result != vk::Result::eSuccess) {
+        LOG_ERROR(Render_Vulkan, "Failed to create graphics pipeline {}: {}", debug_str,
+                  vk::to_string(pipeline_result));
+        std::fprintf(stderr, "GOW3_PIPELINE_FAIL: %s result=%s\n", debug_str.c_str(),
+                     vk::to_string(pipeline_result).c_str());
+        return;
+    }
     pipeline = std::move(pipe);
     SetObjectName(device, *pipeline, "Graphics Pipeline {}", debug_str);
 
@@ -447,10 +453,16 @@ GraphicsPipeline::GraphicsPipeline(
         auto [square_result, square] =
             CreateCachedGraphicsPipeline(device, pipeline_cache, square_info, key,
                                          instance.GetPipelineBinaryGlobalKey(), binary_directory);
-        ASSERT_MSG(square_result == vk::Result::eSuccess,
-                   "Failed to create the squaring pipeline: {}", vk::to_string(square_result));
-        square_pipeline = std::move(square);
-        SetObjectName(device, *square_pipeline, "Graphics Pipeline {} squaring pass", debug_str);
+        if (square_result != vk::Result::eSuccess) {
+            LOG_ERROR(Render_Vulkan, "Failed to create squaring pipeline {}: {}", debug_str,
+                      vk::to_string(square_result));
+            std::fprintf(stderr, "GOW3_PIPELINE_FAIL: %s (square) result=%s\n", debug_str.c_str(),
+                         vk::to_string(square_result).c_str());
+        } else {
+            square_pipeline = std::move(square);
+            SetObjectName(device, *square_pipeline, "Graphics Pipeline {} squaring pass",
+                          debug_str);
+        }
     }
     g_gow3_pipeline_total_ns += NsSince(started);
     ++g_gow3_pipelines_built;
@@ -515,6 +527,8 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
     boost::container::small_vector<vk::DescriptorSetLayoutBinding, 32> bindings;
     boost::container::small_vector<vk::DescriptorBindingFlags, 32> binding_flags;
     u32 binding{};
+    u32 total_descriptors = 0;
+    bool any_bindless = false;
 
     for (const auto* stage : stages) {
         if (!stage) {
@@ -532,6 +546,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
                 .stageFlags = stage_bit,
             });
             binding_flags.push_back({});
+            ++total_descriptors;
         }
         for (const auto& image : stage->images) {
             const u32 num_bindings = image.NumBindings(*stage);
@@ -544,6 +559,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
             });
             binding_flags.push_back({});
             binding += num_bindings;
+            total_descriptors += num_bindings;
         }
         for (const auto& sampler : stage->samplers) {
             bindings.push_back({
@@ -553,26 +569,31 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
                 .stageFlags = stage_bit,
             });
             binding_flags.push_back({});
+            ++total_descriptors;
         }
-    }
-    u32 total_descriptors = binding;
-    if (bindless_images) {
-        for (const auto* stage : stages) {
-            if (!stage) {
-                continue;
-            }
-            const auto stage_bit = LogicalStageToStageBit[u32(stage->sw_stage)];
+        if (bindless_images && !stage->bindless_image_recipes.empty()) {
+            any_bindless = true;
             bindings.push_back({
                 .binding = binding++,
                 .descriptorType = vk::DescriptorType::eSampledImage,
-                .descriptorCount = 64,
+                .descriptorCount = Shader::Info::BindlessArraySize,
                 .stageFlags = stage_bit,
             });
             binding_flags.push_back(vk::DescriptorBindingFlagBits::ePartiallyBound);
-            total_descriptors += 64;
+            total_descriptors += Shader::Info::BindlessArraySize;
+            if (stage->HasBindlessStorageRecipe()) {
+                bindings.push_back({
+                    .binding = binding++,
+                    .descriptorType = vk::DescriptorType::eStorageImage,
+                    .descriptorCount = 64,
+                    .stageFlags = stage_bit,
+                });
+                binding_flags.push_back(vk::DescriptorBindingFlagBits::ePartiallyBound);
+                total_descriptors += 64;
+            }
         }
     }
-    uses_push_descriptors = !bindless_images && total_descriptors < instance.MaxPushDescriptors();
+    uses_push_descriptors = !any_bindless && total_descriptors < instance.MaxPushDescriptors();
     const auto flags = uses_push_descriptors
                            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
                            : vk::DescriptorSetLayoutCreateFlagBits{};
@@ -581,7 +602,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
         .pBindingFlags = binding_flags.data(),
     };
     const vk::DescriptorSetLayoutCreateInfo desc_layout_ci = {
-        .pNext = bindless_images ? &binding_flags_ci : nullptr,
+        .pNext = any_bindless ? &binding_flags_ci : nullptr,
         .flags = flags,
         .bindingCount = static_cast<u32>(bindings.size()),
         .pBindings = bindings.data(),

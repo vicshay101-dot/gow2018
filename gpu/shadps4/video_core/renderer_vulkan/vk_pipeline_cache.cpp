@@ -795,10 +795,14 @@ void PipelineCache::PublishGraphics(bool wait) {
             continue;
         }
         const auto key = it.key();
-        build->pipeline->PublishStages(build->live_infos);
-        RegisterPipelineData(key, std::hash<GraphicsPipelineKey>{}(key), build->data);
-        graphics_pipelines.emplace(key, std::move(build->pipeline));
-        ++num_new_pipelines;
+        if (build->pipeline && build->pipeline->Handle()) {
+            build->pipeline->PublishStages(build->live_infos);
+            RegisterPipelineData(key, std::hash<GraphicsPipelineKey>{}(key), build->data);
+            graphics_pipelines.emplace(key, std::move(build->pipeline));
+            ++num_new_pipelines;
+        } else {
+            graphics_pipelines.emplace(key, nullptr);
+        }
         it = pending_graphics.erase(it);
     }
 }
@@ -955,18 +959,20 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         CompileTimer timer;
 
         GraphicsPipeline::SerializationSupport sdata{};
-        it.value() = std::make_unique<GraphicsPipeline>(
+        auto built = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, sel.graphics_key, *pipeline_cache, sel.infos,
             sel.runtime_infos, sel.fetch_shader, sel.modules, sdata, false);
+        if (built->Handle()) {
+            it.value() = std::move(built);
+            RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
+            ++num_new_pipelines;
 
-        RegisterPipelineData(sel.graphics_key, pipeline_hash, sdata);
-        ++num_new_pipelines;
-
-        if (EmulatorSettings.IsShaderCollect()) {
-            for (auto stage = 0; stage < MaxShaderStages; ++stage) {
-                if (sel.infos[stage]) {
-                    auto& m = sel.modules[stage];
-                    module_related_pipelines[m].emplace_back(sel.graphics_key);
+            if (EmulatorSettings.IsShaderCollect()) {
+                for (auto stage = 0; stage < MaxShaderStages; ++stage) {
+                    if (sel.infos[stage]) {
+                        auto& m = sel.modules[stage];
+                        module_related_pipelines[m].emplace_back(sel.graphics_key);
+                    }
                 }
             }
         }

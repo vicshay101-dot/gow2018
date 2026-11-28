@@ -869,7 +869,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 rasterizer->WaitDeferredSignals();
             }
             if (rasterizer && IsGuestSyncOpcode(opcode)) {
-                rasterizer->NotifyGuestSync();
+                rasterizer->NotifyGuestSync(opcode == PM4ItOpcode::WaitRegMem);
             }
             switch (opcode) {
             case PM4ItOpcode::Nop: {
@@ -1487,9 +1487,6 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
     size_t acb_size = acb.size_bytes();
     while (!acb.empty()) {
         ProcessCommands();
-        if (rasterizer) {
-            rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute); // gow3: compute work uses the caches
-        }
 
         auto* header = reinterpret_cast<const PM4Header*>(acb.data());
         u32 next_dw_off = header->type3.NumWords() + 1;
@@ -1537,7 +1534,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
 
         const auto* it_body = reinterpret_cast<const u32*>(header) + 1;
         if (rasterizer && IsGuestSyncOpcode(opcode)) {
-            rasterizer->NotifyGuestSync();
+            rasterizer->NotifyGuestSync(opcode == PM4ItOpcode::WaitRegMem);
         }
         switch (opcode) {
         case PM4ItOpcode::Nop: {
@@ -1611,6 +1608,10 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             }
             const PM4CmdRewind* rewind = reinterpret_cast<const PM4CmdRewind*>(header);
             while (!rewind->Valid()) {
+                if (rasterizer && !rasterizer->DrawPipeIdle()) {
+                    rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute);
+                    continue;
+                }
                 YIELD_ASC(vqid);
             }
             break;
@@ -1628,6 +1629,8 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             } else {
                 std::memcpy(&regs.reg_array[Regs::ShRegWordOffset + set_data->reg_offset],
                             header + 2, set_size);
+                pipe_dirty.Mark(Regs::ShRegWordOffset + set_data->reg_offset,
+                                header->type3.NumWords() - 1);
                 // gow3: interleaves with the graphics stream at an unpredictable point, so
                 // draw-preparation workers cannot reproduce it: make their checksums differ.
                 gfx_reg_checksum = HashRegisterPacket(gfx_reg_checksum ^ 0xA5C0A5C0A5C0ull,
@@ -1695,6 +1698,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             // gow3: copies deferred to the recording thread precede writes the guest sees, and
             // so do graphics fences deferred to it (the pipe was drained before this packet).
             if (rasterizer) {
+                rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute);
                 rasterizer->WaitHostCopies();
                 rasterizer->WaitDeferredSignals();
             }
@@ -1711,9 +1715,16 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         case PM4ItOpcode::MemSemaphore: {
             const auto* mem_semaphore = reinterpret_cast<const PM4CmdMemSemaphore*>(header);
             if (mem_semaphore->IsSignaling()) {
+                if (rasterizer && !rasterizer->DrawPipeIdle()) {
+                    rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute);
+                }
                 mem_semaphore->Signal();
             } else {
                 while (!mem_semaphore->Signaled()) {
+                    if (rasterizer && !rasterizer->DrawPipeIdle()) {
+                        rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute);
+                        continue;
+                    }
                     YIELD_ASC(vqid);
                 }
                 mem_semaphore->Decrement();
@@ -1723,7 +1734,20 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         case PM4ItOpcode::WaitRegMem: {
             const auto* wait_reg_mem = reinterpret_cast<const PM4CmdWaitRegMem*>(header);
             ASSERT(wait_reg_mem->engine.Value() == PM4CmdWaitRegMem::Engine::Me);
+            // gow3: a fence handed to the draw recording thread counts as written: that
+            // thread runs everything in stream order.
+            if (u32 value; wait_reg_mem->mem_space.Value() ==
+                               PM4CmdWaitRegMem::MemSpace::Memory &&
+                           !Gow3Toggle::Disabled(Gow3Toggle::PendingFenceWaits) &&
+                           PendingFenceValue(wait_reg_mem->Address<VAddr>(), value) &&
+                           wait_reg_mem->TestValue(value)) {
+                break;
+            }
             while (!wait_reg_mem->Test(regs.reg_array)) {
+                if (rasterizer && !rasterizer->DrawPipeIdle()) {
+                    rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute);
+                    continue;
+                }
                 YIELD_ASC(vqid);
             }
             break;
@@ -1732,6 +1756,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             // gow3: copies deferred to the recording thread precede writes the guest sees, and
             // so do graphics fences deferred to it (the pipe was drained before this packet).
             if (rasterizer) {
+                rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute);
                 rasterizer->WaitHostCopies();
                 rasterizer->WaitDeferredSignals();
             }
@@ -1758,6 +1783,9 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             break;
         }
         case PM4ItOpcode::CondExec: {
+            if (rasterizer && !rasterizer->DrawPipeIdle()) {
+                rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCompute);
+            }
             const auto* cond_exec = reinterpret_cast<const PM4CmdCondExec*>(header);
             if (ShouldSkipCondExec(*cond_exec)) {
                 next_dw_off += cond_exec->exec_count.Value();

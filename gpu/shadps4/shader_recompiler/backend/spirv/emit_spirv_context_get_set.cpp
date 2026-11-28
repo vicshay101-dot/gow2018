@@ -278,15 +278,23 @@ Id EmitGetAttributeU32(EmitContext& ctx, IR::Attribute attr, u32 comp) {
 void EmitSetAttribute(EmitContext& ctx, IR::Attribute attr, Id value, u32 element) {
     const auto op_store = [&](Id pointer) {
         const auto [component_type, is_integer] = OutputAttrComponentType(ctx, attr);
+        const bool is_float_mrt = [&] {
+            if (!IR::IsMrt(attr) || component_type.value != ctx.F32[1].value) {
+                return false;
+            }
+            const u32 mrt_index = u32(attr) - u32(IR::Attribute::RenderTarget0);
+            return ctx.runtime_info.hw.fs.color_buffers[mrt_index].num_format ==
+                   AmdGpu::NumberFormat::Float;
+        }();
         if (is_integer) {
             ctx.OpStore(pointer, ctx.OpBitcast(component_type, value));
-        } else if (IR::IsMrt(attr) && component_type.value == ctx.F32[1].value) {
+        } else if (is_float_mrt) {
             // NaN/Inf written to float (R16G16B16A16_SFLOAT etc.) render targets spread through
             // bloom/volumetrics/tonemap and show up as solid cyan/yellow blocks. Flush NaN to 0
-            // and clamp to the finite fp16 range. Disable with GOW3_MRT_SANITIZE=0.
+            // and clamp to the finite fp16 range. Opt-in with GOW3_MRT_SANITIZE=1.
             static const bool enabled = [] {
                 const char* env = std::getenv("GOW3_MRT_SANITIZE");
-                return !env || env[0] != '0';
+                return env && env[0] == '1';
             }();
             if (enabled) {
                 const Id is_nan{ctx.OpIsNan(ctx.U1[1], value)};
