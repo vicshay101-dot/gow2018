@@ -2006,6 +2006,10 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
                     // entries and the fallback, so an unfilled slot never holds a null descriptor.
                     const auto resolve_view = [&](const AmdGpu::Image& tsharp,
                                                   vk::DescriptorImageInfo& out) -> bool {
+                        // Unfilled bindless slots hold a zeroed T#: no image to resolve (FindImage asserts).
+                        if (tsharp.Address() == 0) {
+                            return false;
+                        }
                         VideoCore::TextureCache::ImageDesc desc{tsharp, target_image_desc};
                         VideoCore::ImageId image_id = texture_cache.FindImage(desc);
                         if (!image_id) {
@@ -2110,6 +2114,9 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
                     const auto& storage_target = stage->images[st_recipe->image_binding];
                     const auto resolve_storage = [&](const AmdGpu::Image& tsharp,
                                                      vk::DescriptorImageInfo& out) -> bool {
+                        if (tsharp.Address() == 0) {
+                            return false;
+                        }
                         VideoCore::TextureCache::ImageDesc desc{tsharp, storage_target};
                         VideoCore::ImageId image_id = texture_cache.FindImage(desc);
                         if (!image_id) {
