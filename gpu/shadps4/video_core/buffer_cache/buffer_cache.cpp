@@ -181,12 +181,8 @@ void BufferCache::ExtendWriteFault(VAddr device_addr) {
         const char* env = std::getenv("GOW3_FAULT_WINDOW");
         // Android: ~1200 write-protection faults/frame (signal delivery = kernel time) were seen
         // with the 256 KiB default, so default to the 1 MiB window already used by the launcher.
-        const bool android = std::getenv("GOW3_ANDROID_PORT") != nullptr;
-        const u64 kib = env ? std::strtoull(env, nullptr, 10) : (android ? 1024 : 256);
-        // gow2018: on Android the signal-based tracker (userfaultfd unavailable) costs about
-        // 1264 read faults per frame at 1 MiB. Allow a 2 MiB window there so one fault covers
-        // twice the pages; desktop keeps the 1 MiB cap.
-        return std::bit_ceil(std::clamp<u64>(kib, 4, android ? 2048 : 1024)) * 1024;
+        const u64 kib = env ? std::strtoull(env, nullptr, 10) : (std::getenv("GOW3_ANDROID_PORT") ? 1024 : 256);
+        return std::bit_ceil(std::clamp<u64>(kib, 4, 1024)) * 1024;
     }();
     if (window <= TRACKER_BYTES_PER_PAGE || Gow3Toggle::Disabled(Gow3Toggle::FaultWindow)) {
         return;

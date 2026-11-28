@@ -169,8 +169,7 @@ if [ "${GOW3_GAME_TITLE:-}" = "CUSA07408" ] || [ "${GOW3_PATCH_STATUS:-}" = "gow
     export GOW3_HOT_PAGES=${GOW3_HOT_PAGES:-1}
     export GOW3_PREP_WORKERS=${GOW3_PREP_WORKERS:-2}
     export GOW3_PERF_DIAG=${GOW3_PERF_DIAG:-0}
-    # 2 MiB write-fault window: halves the signal faults per frame (see buffer_cache.cpp)
-    export GOW3_FAULT_WINDOW=${GOW3_FAULT_WINDOW:-2048}
+    export GOW3_FAULT_WINDOW=${GOW3_FAULT_WINDOW:-1024}
     export GOW3_COPY_GPU_BUFFERS=${GOW3_COPY_GPU_BUFFERS:-1}
     export GOW3_ASYNC_SHADERS=${GOW3_ASYNC_SHADERS:-1}
     export GOW3_ASYNC_CAPTURE=${GOW3_ASYNC_CAPTURE:-1}
