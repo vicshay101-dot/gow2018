@@ -326,6 +326,13 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
                 const u64 kb = std::strtoull(env, nullptr, 10);
                 if (kb > 0) return kb * 1_KB;
             }
+            // gow2018 Android: every GPU-thread read fault downloads and un-protects one window.
+            // With 512 KiB windows the same GPU-written regions fault again every frame (~1300
+            // SIGSEGV/frame, 90-300 ms of kernel time). 4 MiB windows cut the fault count ~8x;
+            // only GPU-modified ranges are copied (ForEachDownloadRange), so bytes stay similar.
+            if (std::getenv("GOW3_ANDROID_PORT")) {
+                return 4_MB;
+            }
             return 512_KB;
         }();
         const VAddr window_start =
